@@ -1,0 +1,55 @@
+{
+  "name": "flowcap-monorepo",
+  "version": "1.0.0",
+  "description": "FlowCap - Autonomous DeFi Wealth Manager for BNB Chain",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch agents/index.ts",
+    "start": "node dist/agents/index.js",
+    "test": "vitest",
+    "test:skills": "vitest agents/skills",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write \"**/*.{ts,tsx,json,yaml}\"",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flowCap-ai/monorepo.git"
+  },
+  "keywords": [
+    "defi",
+    "bnb-chain",
+    "yield-farming",
+    "account-abstraction",
+    "ai-agent"
+  ],
+  "author": "HashFox Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/flowCap-ai/monorepo/issues"
+  },
+  "homepage": "https://github.com/flowCap-ai/monorepo#readme",
+  "dependencies": {
+    "openclaw": "^2026.2.9",
+    "viem": "^2.21.0",
+    "yaml": "^2.4.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0",
+    "tsx": "^4.7.0",
+    "vitest": "^1.2.0",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "prettier": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
