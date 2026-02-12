@@ -1,0 +1,223 @@
+# FlowCap Agent Configuration
+# This config defines the agent's behavior and connections
+
+agent:
+  name: "FlowCap Yield Optimizer"
+  version: "1.0.0"
+  description: "Autonomous DeFi wealth manager for BNB Chain"
+
+# Network Configuration
+network:
+  chain: "bnb"
+  chainId: 56
+  rpcUrl: "${BNB_RPC_URL}"
+  backupRpcUrls:
+    - "https://bsc-dataseed1.binance.org"
+    - "https://bsc-dataseed2.binance.org"
+    - "https://bsc-dataseed3.binance.org"
+    - "https://bsc-dataseed4.binance.org"
+
+# Account Abstraction (Biconomy)
+accountAbstraction:
+  enabled: true
+  bundlerUrl: "${BICONOMY_BUNDLER_URL}"
+  paymasterUrl: "${BICONOMY_PAYMASTER_URL}"
+  entryPoint: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"
+
+# Supported Protocols
+protocols:
+  venus:
+    name: "Venus Protocol"
+    type: "lending"
+    comptroller: "0xfD36E2c2a6789Db23113685031d7F16329158384"
+    markets:
+      - symbol: "vBNB"
+        address: "0xA07c5b74C9B40447a954e1466938b865b6BBea36"
+        underlying: "BNB"
+      - symbol: "vUSDT"
+        address: "0xfD5840Cd36d94D7229439859C0112a4185BC0255"
+        underlying: "0x55d398326f99059fF775485246999027B3197955"
+      - symbol: "vUSDC"
+        address: "0xecA88125a5ADbe82614ffC12D0DB554E2e2867C8"
+        underlying: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+      - symbol: "vBUSD"
+        address: "0x95c78222B3D6e262426483D42CfA53685A67Ab9D"
+        underlying: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+
+  pancakeswap:
+    name: "PancakeSwap"
+    type: "dex"
+    routerV2: "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+    routerV3: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"
+    quoterV3: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997"
+    factoryV2: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"
+
+# Token Whitelist (allowed tokens for operations)
+tokens:
+  - symbol: "BNB"
+    address: "native"
+    decimals: 18
+  - symbol: "WBNB"
+    address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+    decimals: 18
+  - symbol: "USDT"
+    address: "0x55d398326f99059fF775485246999027B3197955"
+    decimals: 18
+  - symbol: "USDC"
+    address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+    decimals: 18
+  - symbol: "BUSD"
+    address: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+    decimals: 18
+  - symbol: "ETH"
+    address: "0x2170Ed0880ac9A755fd29B2688956BD959F933F8"
+    decimals: 18
+  - symbol: "BTCB"
+    address: "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c"
+    decimals: 18
+
+# Risk Profiles
+riskProfiles:
+  low:
+    name: "Prudent"
+    description: "100% stablecoins on blue-chip lending"
+    allowedProtocols:
+      - "venus"
+    allowedTokens:
+      - "USDT"
+      - "USDC"
+      - "BUSD"
+    maxSlippage: 0.5
+    minTVL: 100000000  # $100M minimum TVL
+    minProtocolAge: 365  # 1 year minimum
+
+  medium:
+    name: "Moderate"
+    description: "Liquid staking + correlated LP pairs"
+    allowedProtocols:
+      - "venus"
+      - "pancakeswap"
+    allowedTokens:
+      - "USDT"
+      - "USDC"
+      - "BUSD"
+      - "BNB"
+      - "WBNB"
+    maxSlippage: 1.0
+    minTVL: 50000000  # $50M minimum TVL
+    minProtocolAge: 180  # 6 months minimum
+
+  high:
+    name: "Aggressive"
+    description: "New yield farming pools with higher volatility"
+    allowedProtocols:
+      - "venus"
+      - "pancakeswap"
+      - "alpaca"
+    allowedTokens:
+      - "USDT"
+      - "USDC"
+      - "BUSD"
+      - "BNB"
+      - "WBNB"
+      - "ETH"
+      - "BTCB"
+    maxSlippage: 2.0
+    minTVL: 10000000  # $10M minimum TVL
+    minProtocolAge: 90  # 3 months minimum
+
+# Strategy Parameters
+strategy:
+  # Minimum APY improvement to trigger reallocation (%)
+  minAPYImprovement: 1.0
+
+  # Minimum holding period before reallocation (days)
+  minHoldingPeriod: 7
+
+  # Gas cost buffer multiplier
+  gasCostBuffer: 1.2
+
+  # Maximum gas price to execute (gwei)
+  maxGasPrice: 5
+
+  # Check interval for yield opportunities (ms)
+  checkInterval: 300000  # 5 minutes
+
+  # Require 7-day profit to cover gas + 1% margin
+  profitThreshold:
+    days: 7
+    marginPercent: 1.0
+
+# Session Key Permissions (anti-drainage policy)
+sessionKeyPolicy:
+  # Allowed contract calls
+  allowedTargets:
+    - "0x10ED43C718714eb63d5aA57B78B54704E256024E"  # PancakeSwap Router V2
+    - "0xfD36E2c2a6789Db23113685031d7F16329158384"  # Venus Comptroller
+    - "0xA07c5b74C9B40447a954e1466938b865b6BBea36"  # Venus vBNB
+    - "0xfD5840Cd36d94D7229439859C0112a4185BC0255"  # Venus vUSDT
+    - "0xecA88125a5ADbe82614ffC12D0DB554E2e2867C8"  # Venus vUSDC
+
+  # Allowed function selectors
+  allowedFunctions:
+    - "0x38ed1739"  # swapExactTokensForTokens
+    - "0x7ff36ab5"  # swapExactETHForTokens
+    - "0x18cbafe5"  # swapExactTokensForETH
+    - "0xa0712d68"  # mint (Venus)
+    - "0xdb006a75"  # redeem (Venus)
+    - "0x095ea7b3"  # approve (ERC20)
+
+  # STRICTLY FORBIDDEN - transfers to external addresses
+  blockedFunctions:
+    - "0xa9059cbb"  # transfer
+    - "0x23b872dd"  # transferFrom
+
+  # Maximum single transaction value (in USD)
+  maxTxValue: 10000
+
+  # Session key validity period (seconds)
+  validityPeriod: 604800  # 7 days
+
+# Notifications
+notifications:
+  telegram:
+    enabled: true
+    botToken: "${TELEGRAM_BOT_TOKEN}"
+    chatId: "${TELEGRAM_CHAT_ID}"
+    events:
+      - "reallocation_executed"
+      - "yield_opportunity_found"
+      - "risk_alert"
+      - "session_key_expiring"
+
+# Data Sources
+dataSources:
+  yields:
+    primary: "defillama"
+    fallback: "onchain"
+    cacheTimeout: 60  # seconds
+
+  prices:
+    primary: "coingecko"
+    fallback: "chainlink"
+    cacheTimeout: 30  # seconds
+
+# Logging
+logging:
+  level: "${LOG_LEVEL:-info}"
+  format: "json"
+  outputs:
+    - type: "console"
+    - type: "file"
+      path: "./logs/agent.log"
+      maxSize: "10MB"
+      maxFiles: 5
+
+# Health Checks
+healthCheck:
+  enabled: true
+  interval: 60000  # 1 minute
+  checks:
+    - type: "rpc_connection"
+    - type: "bundler_connection"
+    - type: "session_key_validity"
