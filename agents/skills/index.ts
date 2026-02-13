@@ -4,11 +4,11 @@
  */
 
 // Core skills (new dynamic flow)
-export * from './getPools.js';
+export * from './getPoolData.js';
 export * from './analyzePool.js';
 export * from './execSwap.js';
 
 // Default exports
-export { default as getPools } from './getPools.js';
+export { default as getPoolData } from './getPoolData.js';
 export { default as analyzePool } from './analyzePool.js';
 export { default as execSwap } from './execSwap.js';
