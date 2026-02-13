@@ -1,0 +1,7 @@
+@import '@rainbow-me/rainbowkit/styles.css';
+@import 'tailwindcss';
+
+body {
+  background-color: rgb(3 7 18);
+  color: white;
+}
