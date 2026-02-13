@@ -3,11 +3,12 @@
  * Export all skills for use by the agent
  */
 
-export * from './getYields.js';
+// Core skills (new dynamic flow)
+export * from './getPools.js';
+export * from './analyzePool.js';
 export * from './execSwap.js';
-export * from './riskScanner.js';
 
 // Default exports
-export { default as getYields } from './getYields.js';
+export { default as getPools } from './getPools.js';
+export { default as analyzePool } from './analyzePool.js';
 export { default as execSwap } from './execSwap.js';
-export { default as riskScanner } from './riskScanner.js';
