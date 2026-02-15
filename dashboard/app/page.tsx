@@ -1,7 +1,7 @@
 'use client';
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import AgentDashboard from '../components/AgentDashboard';
+import FlowCapDashboard from '../components/FlowCapDashboard';
 
 export default function Home() {
   return (
@@ -64,8 +64,8 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Agent Dashboard - One-click start! */}
-        <AgentDashboard />
+        {/* FlowCap Dashboard - Delegate & Start OpenClaw */}
+        <FlowCapDashboard />
 
         {/* Info Section */}
         <div className="mt-12 p-6 bg-gray-900 rounded-lg border border-gray-800">
