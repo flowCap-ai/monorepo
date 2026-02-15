@@ -6,13 +6,12 @@
 import { getPancakeSwapPoolData } from '../agents/skills/getPoolData.js';
 
 async function testPoolData() {
-  console.log('Testing Fixed Pool Data with Real APIs...\n');
+  console.log('Testing V2 and V3 Pool Data with Real APIs...\n');
 
   try {
     const V_initial = 1000;
-    console.log(`Fetching first PancakeSwap pool with V_initial = $${V_initial}...\n`);
+    console.log(`Fetching PancakeSwap pools with V_initial = $${V_initial}...\n`);
 
-    // Get only the first pool to test quickly
     const pancakePools = await getPancakeSwapPoolData(V_initial);
 
     if (pancakePools.length === 0) {
@@ -20,41 +19,42 @@ async function testPoolData() {
       return;
     }
 
-    // Test CAKE-WBNB pool (most liquid)
-    const pool = pancakePools.find(p => p.name === 'CAKE-WBNB') || pancakePools[0];
-    console.log('=== POOL DATA WITH FIXED APIS ===\n');
-    console.log(`Pool: ${pool.name}`);
-    console.log(`Assets: ${pool.assets.join('-')}`);
-    console.log(`Address: ${pool.address}`);
+    console.log(`Total pools found: ${pancakePools.length}\n`);
 
-    if (pool.exogenousParams) {
-      const params = pool.exogenousParams;
-      console.log(`\n=== EXOGENOUS PARAMETERS ===`);
-      console.log(`r (price ratio): ${params.r.toFixed(4)}`);
-      console.log(`V_initial (user investment): $${params.V_initial.toLocaleString()}`);
-      console.log(`V_24h (24h volume): $${params.V_24h.toLocaleString()} ${params.V_24h > 0 ? '✅' : '❌'}`);
-      console.log(`TVL_lp (liquidity): $${params.TVL_lp.toLocaleString()}`);
-      console.log(`w_pair_ratio (weight): ${params.w_pair_ratio.toFixed(6)}`);
-      console.log(`P_cake (CAKE price): $${params.P_cake.toFixed(4)}`);
-      console.log(`TVL_stack (staked): $${params.TVL_stack.toLocaleString()} ${params.TVL_stack !== params.TVL_lp ? '✅' : '⚠️'}`);
-      console.log(`P_gas (gas price): ${params.P_gas.toFixed(4)} Gwei ${params.P_gas !== 3 ? '✅' : '⚠️'}`);
-      console.log(`P_BNB (BNB price): $${params.P_BNB.toFixed(2)}`);
+    // Test CAKE-WBNB pools (V2 and V3)
+    const cakePools = pancakePools.filter(p => p.assets.includes('CAKE') && p.assets.includes('WBNB'));
 
-      // Validation
-      console.log('\n=== VALIDATION ===');
-      const issues = [];
-      if (params.V_24h === 0) issues.push('❌ 24h volume is $0');
-      if (params.TVL_stack === params.TVL_lp) issues.push('⚠️  Staking TVL equals LP TVL (may be correct)');
-      if (params.P_gas === 3) issues.push('⚠️  Gas price is fallback value (3 Gwei)');
+    console.log(`Found ${cakePools.length} CAKE-WBNB pools\n`);
 
-      if (issues.length === 0) {
-        console.log('✅ All parameters have real data!');
-      } else {
-        console.log('Issues found:');
-        issues.forEach(issue => console.log(`  ${issue}`));
+    for (const pool of cakePools) {
+      console.log('='.repeat(60));
+      console.log(`Pool: ${pool.name}`);
+      console.log(`Version: ${pool.version?.toUpperCase()}`);
+      console.log(`Assets: ${pool.assets.join('-')}`);
+      console.log(`Address: ${pool.address}`);
+
+      if (pool.exogenousParams) {
+        const params = pool.exogenousParams;
+        console.log(`\nExogenous Parameters:`);
+        console.log(`  V_initial: $${params.V_initial.toLocaleString()}`);
+        console.log(`  V_24h (volume): $${params.V_24h.toLocaleString()} ${params.V_24h > 0 ? '✅' : '❌'}`);
+        console.log(`  TVL_lp: $${params.TVL_lp.toLocaleString()}`);
+        console.log(`  Volume/TVL ratio: ${((params.V_24h / params.TVL_lp) * 100).toFixed(2)}%`);
+        console.log(`  w_pair_ratio: ${params.w_pair_ratio.toFixed(6)}`);
+        console.log(`  P_cake: $${params.P_cake.toFixed(4)}`);
+        console.log(`  TVL_stack: $${params.TVL_stack.toLocaleString()}`);
+        console.log(`  P_gas: ${params.P_gas.toFixed(4)} Gwei ${params.P_gas !== 3 ? '✅' : '⚠️'}`);
+        console.log(`  P_BNB: $${params.P_BNB.toFixed(2)}`);
+
+        // Validation
+        const volumeRatio = (params.V_24h / params.TVL_lp) * 100;
+        if (volumeRatio > 0.1 && volumeRatio < 20) {
+          console.log(`\n✅ Volume/TVL ratio is healthy (${volumeRatio.toFixed(2)}%)`);
+        } else if (volumeRatio > 20) {
+          console.log(`\n⚠️  High volume/TVL ratio (${volumeRatio.toFixed(2)}%) - concentrated liquidity or low TVL`);
+        }
       }
-    } else {
-      console.log('\n❌ No exogenous parameters found!');
+      console.log('');
     }
 
     console.log('\nTest completed!');

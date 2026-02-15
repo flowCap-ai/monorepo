@@ -1,26 +1,15 @@
-/**
- * getPoolData.ts - Get pool data with exogenous parameters for yield modeling
- * Returns pool information with all parameters needed for mathematical yield modeling
- *
- * Based on math.md formula:
- * Exogenous Parameters: r, V_initial, V_24h, TVL_lp, w_pair/Σw, P_cake, TVL_stack, P_Gas, P_BNB
- */
-
 import type { Address } from 'viem';
 
-const VENUS_API_URL = 'https://api.venus.io';
-const DEFILLAMA_POOLS_URL = 'https://yields.llama.fi/pools';
-const COINGECKO_API_URL = 'https://api.coingecko.com/api/v3';
-const OWLRACLE_GAS_API = 'https://api.owlracle.info/v2/bsc/gas';
-const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/pairs/bsc';
+const VENUS_API_URL = process.env.VENUS_API_URL || 'https://api.venus.io';
+const DEFILLAMA_POOLS_URL = `${process.env.DEFILLAMA_API_URL || 'https://yields.llama.fi'}/pools`;
+const COINGECKO_API_URL = process.env.COINGECKO_API_URL || 'https://api.coingecko.com/api/v3';
+const OWLRACLE_GAS_API = process.env.OWLRACLE_GAS_API || 'https://api.owlracle.info/v2/bsc/gas';
+const DEXSCREENER_API_BASE = process.env.DEXSCREENER_API || 'https://api.dexscreener.com/latest/dex';
 
 /**
  * Exogenous parameters for DEX (PancakeSwap) yield modeling
  */
 export interface DexExogenousParams {
-  // Price ratio (for impermanent loss calculation)
-  r: number; // Current price ratio P_final / P_initial
-
   // User investment
   V_initial: number; // Value sent by user (in USD)
 
@@ -53,6 +42,9 @@ export interface PoolData {
 
   name: string;
   isActive: boolean;
+
+  // Pool version (for PancakeSwap V2 vs V3)
+  version?: 'v2' | 'v3';
 
   // Exogenous parameters (only for DEX pools like PancakeSwap)
   exogenousParams?: DexExogenousParams;
@@ -100,28 +92,21 @@ async function getTokenPrices(): Promise<{ cake: number; bnb: number }> {
   }
 }
 
-/**
- * Calculate price ratio r for impermanent loss
- * r = P_final / P_initial
- * For new positions, we assume r = 1 (no price change yet)
- */
-function calculatePriceRatio(): number {
-  // TODO: In future, fetch historical prices and calculate actual ratio
-  // For now, return 1 (neutral position)
-  return 1;
-}
 
 /**
  * Enrich pool data with DexScreener volume and liquidity data
- * Search by token symbols since DeFiLlama pool IDs are UUIDs, not contract addresses
+ * Returns both V2 and V3 pool data if available
  */
-async function enrichWithDexScreenerData(assets: string[]): Promise<{ volume24h: number; liquidity: number } | null> {
+async function enrichWithDexScreenerData(assets: string[]): Promise<{
+  v2?: { volume24h: number; liquidity: number; pairAddress: string };
+  v3?: { volume24h: number; liquidity: number; pairAddress: string };
+} | null> {
   try {
     if (assets.length < 2) return null;
 
     // Search for the pair by token symbols
     const searchQuery = assets.join(' ');
-    const response = await fetch(`https://api.dexscreener.com/latest/dex/search/?q=${encodeURIComponent(searchQuery)}`);
+    const response = await fetch(`${DEXSCREENER_API_BASE}/search/?q=${encodeURIComponent(searchQuery)}`);
     if (!response.ok) return null;
 
     const data = await response.json() as any;
@@ -139,15 +124,29 @@ async function enrichWithDexScreenerData(assets: string[]): Promise<{ volume24h:
 
     if (pancakePairs.length === 0) return null;
 
-    // Prefer V2 pools (more stable liquidity), or pick the one with highest liquidity
-    const v2Pair = pancakePairs.find((p: any) => p.labels?.includes('v2'));
-    const pancakePair = v2Pair || pancakePairs.reduce((max: any, p: any) =>
+    // Get V2 pool (highest liquidity V2)
+    const v2Pairs = pancakePairs.filter((p: any) => p.labels?.includes('v2'));
+    const v2Pair = v2Pairs.length > 0 ? v2Pairs.reduce((max: any, p: any) =>
       (p.liquidity?.usd || 0) > (max.liquidity?.usd || 0) ? p : max
-    );
+    ) : null;
+
+    // Get V3 pool (highest liquidity V3)
+    const v3Pairs = pancakePairs.filter((p: any) => p.labels?.includes('v3'));
+    const v3Pair = v3Pairs.length > 0 ? v3Pairs.reduce((max: any, p: any) =>
+      (p.liquidity?.usd || 0) > (max.liquidity?.usd || 0) ? p : max
+    ) : null;
 
     return {
-      volume24h: pancakePair.volume?.h24 || 0,
-      liquidity: pancakePair.liquidity?.usd || 0,
+      v2: v2Pair ? {
+        volume24h: v2Pair.volume?.h24 || 0,
+        liquidity: v2Pair.liquidity?.usd || 0,
+        pairAddress: v2Pair.pairAddress,
+      } : undefined,
+      v3: v3Pair ? {
+        volume24h: v3Pair.volume?.h24 || 0,
+        liquidity: v3Pair.liquidity?.usd || 0,
+        pairAddress: v3Pair.pairAddress,
+      } : undefined,
     };
   } catch (error) {
     console.warn(`Failed to fetch DexScreener data for ${assets.join('-')}:`, error);
@@ -157,8 +156,13 @@ async function enrichWithDexScreenerData(assets: string[]): Promise<{ volume24h:
 
 /**
  * Get PancakeSwap pools with exogenous parameters
+ * @param V_initial - User's initial investment amount (in USD)
+ * @param riskProfile - Optional risk profile to filter pools
  */
-export async function getPancakeSwapPoolData(V_initial: number = 1000): Promise<PoolData[]> {
+export async function getPancakeSwapPoolData(
+  V_initial: number = 1000,
+  riskProfile?: 'low' | 'medium' | 'high'
+): Promise<PoolData[]> {
   const pools: PoolData[] = [];
 
   try {
@@ -197,43 +201,50 @@ export async function getPancakeSwapPoolData(V_initial: number = 1000): Promise<
           const underlyingTokens = p.underlyingTokens?.map((addr: string) => addr as Address);
           const poolAddress = p.pool || '0x0';
 
-          // Get DexScreener data for accurate volume and liquidity
+          // Get DexScreener data for both V2 and V3
           const dexData = await enrichWithDexScreenerData(assets);
 
-          // Extract pool metrics - prefer DexScreener data if available
-          const TVL_lp = dexData?.liquidity || p.tvlUsd || 0;
-          const V_24h = dexData?.volume24h || p.volumeUsd1d || 0;
+          // Create pool entries for both V2 and V3 if they exist
+          const versions = [
+            { version: 'v2' as const, data: dexData?.v2 },
+            { version: 'v3' as const, data: dexData?.v3 },
+          ];
 
-          // Calculate weight ratio (this pool's TVL / total TVL)
-          const w_pair_ratio = totalTVL > 0 ? TVL_lp / totalTVL : 0;
+          for (const { version, data } of versions) {
+            if (!data) continue; // Skip if this version doesn't exist
 
-          // For staking TVL, use DexScreener liquidity or fallback to TVL
-          const TVL_stack = dexData?.liquidity || p.stakedTvl || TVL_lp;
+            // Extract pool metrics from DexScreener
+            const TVL_lp = data.liquidity || p.tvlUsd || 0;
+            const V_24h = data.volume24h || p.volumeUsd1d || 0;
 
-          // Calculate price ratio
-          const r = calculatePriceRatio();
+            // Calculate weight ratio (this pool's TVL / total TVL)
+            const w_pair_ratio = totalTVL > 0 ? TVL_lp / totalTVL : 0;
 
-          pools.push({
-            protocol: 'pancakeswap',
-            poolId: `pancakeswap-${poolAddress}`,
-            type: 'lp-farm',
-            assets,
-            address: poolAddress as Address,
-            underlyingTokens,
-            name: p.symbol || 'Unknown Pool',
-            isActive: true,
-            exogenousParams: {
-              r,
-              V_initial,
-              V_24h,
-              TVL_lp,
-              w_pair_ratio,
-              P_cake: tokenPrices.cake,
-              TVL_stack,
-              P_gas: gasPrice,
-              P_BNB: tokenPrices.bnb,
-            },
-          });
+            // For staking TVL, use liquidity
+            const TVL_stack = data.liquidity || p.stakedTvl || TVL_lp;
+
+            pools.push({
+              protocol: 'pancakeswap',
+              poolId: `pancakeswap-${version}-${data.pairAddress}`,
+              type: 'lp-farm',
+              assets,
+              address: data.pairAddress as Address,
+              underlyingTokens,
+              name: `${p.symbol || 'Unknown Pool'} (${version.toUpperCase()})`,
+              isActive: true,
+              version,
+              exogenousParams: {
+                V_initial,
+                V_24h,
+                TVL_lp,
+                w_pair_ratio,
+                P_cake: tokenPrices.cake,
+                TVL_stack,
+                P_gas: gasPrice,
+                P_BNB: tokenPrices.bnb,
+              },
+            });
+          }
         })
       );
 
@@ -246,6 +257,13 @@ export async function getPancakeSwapPoolData(V_initial: number = 1000): Promise<
     console.log(`Discovered ${pools.length} PancakeSwap pools with exogenous parameters`);
   } catch (error) {
     console.error('Error fetching PancakeSwap pool data:', error);
+  }
+
+  // Apply risk filter if specified
+  if (riskProfile) {
+    const filteredPools = filterPoolsByRisk(pools, riskProfile);
+    console.log(`Filtered to ${filteredPools.length} pools based on ${riskProfile} risk profile`);
+    return filteredPools;
   }
 
   return pools;
@@ -390,16 +408,29 @@ export async function getAlpacaPoolData(): Promise<PoolData[]> {
 /**
  * Get all available pools with exogenous parameters
  * @param V_initial - User's initial investment amount (in USD)
+ * @param riskProfile - Optional risk profile to filter pools
  */
-export async function getAllPoolData(V_initial: number = 1000): Promise<PoolData[]> {
+export async function getAllPoolData(
+  V_initial: number = 1000,
+  riskProfile?: 'low' | 'medium' | 'high'
+): Promise<PoolData[]> {
   const [venusPools, pancakePools, listaPools, alpacaPools] = await Promise.all([
     getVenusPoolData(),
-    getPancakeSwapPoolData(V_initial),
+    getPancakeSwapPoolData(V_initial, riskProfile),
     getListaPoolData(),
     getAlpacaPoolData(),
   ]);
 
-  return [...venusPools, ...pancakePools, ...listaPools, ...alpacaPools];
+  const allPools = [...venusPools, ...pancakePools, ...listaPools, ...alpacaPools];
+
+  // Apply risk filter if specified
+  if (riskProfile) {
+    const filteredPools = filterPoolsByRisk(allPools, riskProfile);
+    console.log(`Total pools after ${riskProfile} risk filter: ${filteredPools.length}`);
+    return filteredPools;
+  }
+
+  return allPools;
 }
 
 /**
