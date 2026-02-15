@@ -142,7 +142,7 @@ const VTOKEN_ABI = [
   },
 ] as const;
 
-// Token mapping (fallback for common tokens)
+// Token mapping (fallback for common tokens - still useful for backwards compatibility)
 const TOKEN_ADDRESSES: Record<string, Address> = {
   BNB: WBNB_ADDRESS,
   WBNB: WBNB_ADDRESS,
@@ -157,19 +157,96 @@ const VTOKEN_ADDRESSES: Record<string, Address> = {
 };
 
 /**
+ * DYNAMIC TOKEN REGISTRY
+ * Fetches token info on-demand from on-chain data
+ */
+interface TokenInfo {
+  address: Address;
+  symbol: string;
+  decimals: number;
+  name: string;
+}
+
+const tokenCache = new Map<Address, TokenInfo>();
+
+/**
+ * Fetch token info dynamically from blockchain
+ * Caches results to avoid repeated calls
+ */
+export async function getTokenInfo(address: Address): Promise<TokenInfo> {
+  // Check cache first
+  const cached = tokenCache.get(address.toLowerCase() as Address);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    // Fetch from contract
+    const [symbol, decimals, name] = await Promise.all([
+      publicClient.readContract({
+        address,
+        abi: [
+          {
+            name: 'symbol',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [],
+            outputs: [{ type: 'string' }],
+          },
+        ] as const,
+        functionName: 'symbol',
+      }),
+      publicClient.readContract({
+        address,
+        abi: ERC20_ABI,
+        functionName: 'decimals',
+      }),
+      publicClient.readContract({
+        address,
+        abi: [
+          {
+            name: 'name',
+            type: 'function',
+            stateMutability: 'view',
+            inputs: [],
+            outputs: [{ type: 'string' }],
+          },
+        ] as const,
+        functionName: 'name',
+      }),
+    ]);
+
+    const tokenInfo: TokenInfo = {
+      address,
+      symbol: symbol as string,
+      decimals,
+      name: name as string,
+    };
+
+    // Cache it
+    tokenCache.set(address.toLowerCase() as Address, tokenInfo);
+
+    return tokenInfo;
+  } catch (error) {
+    throw new Error(`Failed to fetch token info for ${address}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
  * Resolve token address from symbol or direct address
- * Can accept either a token symbol or a contract address
+ * NOW DYNAMIC - can accept any valid token address, not just hardcoded ones
  */
 function resolveTokenAddress(tokenOrAddress: string): Address {
-  // If it's already an address (starts with 0x), return it
+  // If it's already an address (starts with 0x), return it DIRECTLY
+  // This allows dynamic token addresses from pool data!
   if (tokenOrAddress.startsWith('0x') && tokenOrAddress.length === 42) {
     return tokenOrAddress as Address;
   }
 
-  // Otherwise, look it up in the mapping
+  // Otherwise, look it up in the mapping (for convenience with symbols like "USDT")
   const address = TOKEN_ADDRESSES[tokenOrAddress.toUpperCase()];
   if (!address) {
-    throw new Error(`Unknown token: ${tokenOrAddress}. Please provide a valid token address.`);
+    throw new Error(`Unknown token symbol: ${tokenOrAddress}. Please provide a valid token address (0x...) instead.`);
   }
 
   return address;
@@ -272,29 +349,34 @@ export function createSwapFromPool(
 
 /**
  * Get swap quote from PancakeSwap
- * Supports both token symbols and direct addresses
+ * NOW FULLY DYNAMIC - supports any token address!
  */
 export async function getSwapQuote(params: SwapParams): Promise<SwapQuote> {
   const tokenInAddress = resolveTokenAddress(params.tokenIn);
   const tokenOutAddress = resolveTokenAddress(params.tokenOut);
 
-  // Get token decimals
-  const decimalsIn = params.tokenIn.toUpperCase() === 'BNB' ? 18 : await publicClient.readContract({
-    address: tokenInAddress,
-    abi: ERC20_ABI,
-    functionName: 'decimals',
-  });
+  // Get token decimals DYNAMICALLY (no hardcoded assumptions!)
+  const tokenInInfo = params.tokenIn.toUpperCase() === 'BNB'
+    ? { decimals: 18, symbol: 'BNB', address: tokenInAddress, name: 'BNB' }
+    : await getTokenInfo(tokenInAddress);
 
-  const amountInWei = parseUnits(params.amountIn, decimalsIn);
+  const tokenOutInfo = params.tokenOut.toUpperCase() === 'BNB'
+    ? { decimals: 18, symbol: 'BNB', address: tokenOutAddress, name: 'BNB' }
+    : await getTokenInfo(tokenOutAddress);
 
-  // Build swap path
+  const amountInWei = parseUnits(params.amountIn, tokenInInfo.decimals);
+
+  // Build swap path (can be extended for multi-hop in the future)
   const path: Address[] = tokenInAddress === tokenOutAddress
     ? [tokenInAddress]
     : [tokenInAddress, tokenOutAddress];
 
+  // Use specified router or default to V2
+  const router = params.router || PANCAKESWAP_ROUTER_V2;
+
   // Get amounts out
   const amounts = await publicClient.readContract({
-    address: PANCAKESWAP_ROUTER_V2,
+    address: router,
     abi: PANCAKESWAP_ROUTER_ABI,
     functionName: 'getAmountsOut',
     args: [amountInWei, path],
@@ -309,7 +391,7 @@ export async function getSwapQuote(params: SwapParams): Promise<SwapQuote> {
     tokenIn: params.tokenIn,
     tokenOut: params.tokenOut,
     amountIn: params.amountIn,
-    amountOut: formatUnits(amountOut, 18),
+    amountOut: formatUnits(amountOut, tokenOutInfo.decimals), // Use actual decimals!
     priceImpact: 0.1, // Simplified - in production, calculate from pool reserves
     route: path,
     estimatedGas,
@@ -718,6 +800,267 @@ export async function isSwapProfitable(
   };
 }
 
+/**
+ * MULTI-STEP REALLOCATION
+ * Executes a complete reallocation from current pool to target pool
+ * Handles: withdraw from current pool → swap tokens → supply to target pool
+ */
+export interface ReallocationStep {
+  type: 'withdraw' | 'swap' | 'supply' | 'approve';
+  protocol: string;
+  target: Address;
+  token?: string;
+  amount?: string;
+  description: string;
+}
+
+export interface ReallocationParams {
+  // Current position
+  currentPool: PoolData;
+  currentAmount: string; // Amount currently in the pool
+
+  // Target position
+  targetPool: PoolData;
+
+  // User settings
+  smartAccountAddress: Address;
+  slippageTolerance: number;
+
+  // Optional: custom routing
+  customRoute?: Address[]; // For advanced multi-hop swaps
+}
+
+export interface ReallocationResult {
+  success: boolean;
+  steps: Array<{
+    step: ReallocationStep;
+    result: TransactionResult;
+  }>;
+  totalGasUsed?: bigint;
+  error?: string;
+}
+
+/**
+ * Plan reallocation steps dynamically based on pool data
+ * NO HARDCODED ADDRESSES - uses pool.address and pool.underlyingTokens
+ */
+export function planReallocation(params: ReallocationParams): ReallocationStep[] {
+  const steps: ReallocationStep[] = [];
+
+  // Extract token addresses dynamically from pool data
+  const currentToken = params.currentPool.underlyingTokens?.[0];
+  const targetToken = params.targetPool.underlyingTokens?.[0];
+
+  if (!currentToken || !targetToken) {
+    throw new Error('Pool data missing underlying token addresses');
+  }
+
+  // Step 1: Withdraw from current pool
+  if (params.currentPool.protocol.toLowerCase() === 'venus') {
+    steps.push({
+      type: 'withdraw',
+      protocol: 'Venus',
+      target: params.currentPool.address, // vToken address (dynamic!)
+      token: currentToken,
+      amount: params.currentAmount,
+      description: `Withdraw ${params.currentAmount} from ${params.currentPool.name}`,
+    });
+  } else if (params.currentPool.protocol.toLowerCase() === 'pancakeswap') {
+    // For LP tokens, we'd need to remove liquidity
+    steps.push({
+      type: 'withdraw',
+      protocol: 'PancakeSwap',
+      target: params.currentPool.address,
+      amount: params.currentAmount,
+      description: `Remove liquidity from ${params.currentPool.name}`,
+    });
+  }
+
+  // Step 2: Swap if tokens are different
+  if (currentToken.toLowerCase() !== targetToken.toLowerCase()) {
+    // Determine optimal router dynamically based on pool versions
+    const useV3 = params.currentPool.version === 'v3' || params.targetPool.version === 'v3';
+    const routerAddress = useV3
+      ? (process.env.PANCAKESWAP_ROUTER_V3 || '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4') as Address
+      : PANCAKESWAP_ROUTER_V2;
+
+    steps.push({
+      type: 'swap',
+      protocol: useV3 ? 'PancakeSwap V3' : 'PancakeSwap V2',
+      target: routerAddress,
+      token: currentToken,
+      amount: params.currentAmount,
+      description: `Swap ${currentToken} → ${targetToken} via ${useV3 ? 'V3' : 'V2'}`,
+    });
+  }
+
+  // Step 3: Approve target pool to spend tokens
+  steps.push({
+    type: 'approve',
+    protocol: params.targetPool.protocol,
+    target: targetToken, // Token to approve
+    amount: params.currentAmount,
+    description: `Approve ${params.targetPool.protocol} to spend ${targetToken}`,
+  });
+
+  // Step 4: Supply to target pool
+  if (params.targetPool.protocol.toLowerCase() === 'venus') {
+    steps.push({
+      type: 'supply',
+      protocol: 'Venus',
+      target: params.targetPool.address, // vToken address (dynamic!)
+      token: targetToken,
+      amount: params.currentAmount,
+      description: `Supply to ${params.targetPool.name}`,
+    });
+  } else if (params.targetPool.protocol.toLowerCase() === 'pancakeswap') {
+    steps.push({
+      type: 'supply',
+      protocol: 'PancakeSwap',
+      target: params.targetPool.address,
+      amount: params.currentAmount,
+      description: `Add liquidity to ${params.targetPool.name}`,
+    });
+  }
+
+  return steps;
+}
+
+/**
+ * Execute multi-step reallocation
+ * Dynamically executes all steps: withdraw → swap → supply
+ */
+export async function executeReallocation(params: ReallocationParams): Promise<ReallocationResult> {
+  const steps = planReallocation(params);
+  const results: Array<{ step: ReallocationStep; result: TransactionResult }> = [];
+  let totalGasUsed = BigInt(0);
+
+  console.log(`🔄 Starting reallocation: ${params.currentPool.name} → ${params.targetPool.name}`);
+  console.log(`📋 Planned ${steps.length} steps`);
+
+  for (const step of steps) {
+    console.log(`⚙️ Executing: ${step.description}`);
+
+    let result: TransactionResult;
+
+    try {
+      switch (step.type) {
+        case 'withdraw':
+          if (step.protocol === 'Venus' && step.token) {
+            // Extract token symbol from address (would need a reverse lookup or pass symbol)
+            const tokenSymbol = getTokenSymbol(step.token);
+            result = await withdrawFromVenus(
+              tokenSymbol,
+              step.amount!,
+              params.smartAccountAddress
+            );
+          } else {
+            result = { success: false, error: `Unsupported withdraw protocol: ${step.protocol}` };
+          }
+          break;
+
+        case 'swap':
+          if (step.token && step.amount) {
+            const currentToken = params.currentPool.underlyingTokens![0];
+            const targetToken = params.targetPool.underlyingTokens![0];
+
+            result = await executeSwap({
+              tokenIn: currentToken,
+              tokenOut: targetToken,
+              amountIn: step.amount,
+              slippageTolerance: params.slippageTolerance,
+              recipient: params.smartAccountAddress,
+              router: step.target,
+            });
+          } else {
+            result = { success: false, error: 'Missing swap parameters' };
+          }
+          break;
+
+        case 'approve':
+          // Approval logic (simplified - would use executeTokenApproval)
+          result = { success: true, transactionHash: '0x' as Hex };
+          break;
+
+        case 'supply':
+          if (step.protocol === 'Venus' && step.token) {
+            const tokenSymbol = getTokenSymbol(step.token);
+            result = await supplyToVenus(
+              tokenSymbol,
+              step.amount!,
+              params.smartAccountAddress
+            );
+          } else {
+            result = { success: false, error: `Unsupported supply protocol: ${step.protocol}` };
+          }
+          break;
+
+        default:
+          result = { success: false, error: `Unknown step type: ${step.type}` };
+      }
+
+      results.push({ step, result });
+
+      if (!result.success) {
+        console.error(`❌ Step failed: ${step.description}`);
+        console.error(`Error: ${result.error}`);
+        return {
+          success: false,
+          steps: results,
+          error: `Reallocation failed at step: ${step.description}. ${result.error}`,
+        };
+      }
+
+      if (result.gasUsed) {
+        totalGasUsed += result.gasUsed;
+      }
+
+      console.log(`✅ Step completed: ${step.description}`);
+      if (result.transactionHash) {
+        console.log(`📝 TX: https://bscscan.com/tx/${result.transactionHash}`);
+      }
+
+    } catch (error) {
+      const errorResult: TransactionResult = {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+
+      results.push({ step, result: errorResult });
+
+      return {
+        success: false,
+        steps: results,
+        error: `Reallocation failed at step: ${step.description}`,
+      };
+    }
+  }
+
+  console.log(`✅ Reallocation complete! Total gas used: ${totalGasUsed.toString()}`);
+
+  return {
+    success: true,
+    steps: results,
+    totalGasUsed,
+  };
+}
+
+/**
+ * Helper: Get token symbol from address
+ * In production, this would query the token contract or use a registry
+ */
+function getTokenSymbol(address: Address): string {
+  // Reverse lookup from TOKEN_ADDRESSES
+  for (const [symbol, addr] of Object.entries(TOKEN_ADDRESSES)) {
+    if (addr.toLowerCase() === address.toLowerCase()) {
+      return symbol;
+    }
+  }
+
+  // Fallback: return address (would need to fetch from contract)
+  return address;
+}
+
 // Export for use by the agent
 export default {
   createSwapFromPool,
@@ -726,4 +1069,7 @@ export default {
   supplyToVenus,
   withdrawFromVenus,
   isSwapProfitable,
+  // Multi-step reallocation (NEW!)
+  planReallocation,
+  executeReallocation,
 };

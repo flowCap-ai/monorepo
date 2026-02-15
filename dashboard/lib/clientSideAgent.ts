@@ -42,6 +42,31 @@ export class ClientSideAgent {
     this.session = session;
     this.useServiceWorker = options?.useServiceWorker ?? false;
 
+    // Initialize the REAL OpenClaw agent via API
+    try {
+      const response = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'initialize',
+          smartAccountAddress: session.smartAccountAddress,
+          riskProfile: session.riskProfile,
+          sessionPrivateKey: session.sessionPrivateKey,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to initialize OpenClaw agent');
+      }
+
+      console.log('✅ Real OpenClaw agent initialized on server!');
+    } catch (error) {
+      console.error('❌ Failed to initialize OpenClaw agent:', error);
+      throw error;
+    }
+
     // Register service worker if enabled
     if (this.useServiceWorker && typeof window !== 'undefined') {
       const registered = await this.swManager.register();
@@ -71,8 +96,8 @@ export class ClientSideAgent {
       timestamp: Date.now(),
       data: {
         message: this.useServiceWorker
-          ? '🤖 Agent initialized with background support!'
-          : '🤖 Agent initialized (tab-only mode)!'
+          ? '🤖 Real OpenClaw agent initialized with background support!'
+          : '🤖 Real OpenClaw agent initialized (tab-only mode)!'
       },
     });
   }
@@ -188,7 +213,7 @@ export class ClientSideAgent {
   }
 
   /**
-   * Scan for opportunities (core agent logic)
+   * Scan for opportunities (using REAL OpenClaw agent)
    */
   private async scan(): Promise<void> {
     if (!this.session) return;
@@ -200,48 +225,43 @@ export class ClientSideAgent {
         data: { status: 'started' },
       });
 
-      // Import skills dynamically (browser-compatible)
-      const getPools = await this.importSkill('getPools');
-      const analyzePool = await this.importSkill('analyzePool');
-
-      // 1. Get all pools for risk profile
-      const allPools = await getPools.getAllPools();
-      const filteredPools = getPools.filterPoolsByRisk(allPools, this.session.riskProfile);
-
-      this.emit({
-        type: 'scan',
-        timestamp: Date.now(),
-        data: {
-          status: 'pools_found',
-          total: allPools.length,
-          filtered: filteredPools.length,
-          riskProfile: this.session.riskProfile,
-        },
+      // Call the REAL OpenClaw agent scan function via API
+      const response = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'scan',
+          sessionPrivateKey: this.session.sessionPrivateKey,
+        }),
       });
 
-      // 2. Analyze top opportunities
-      const opportunities = [];
-      for (const pool of filteredPools.slice(0, 5)) {
-        try {
-          const analysis = await analyzePool.analyzePool(pool.poolId);
-          opportunities.push({
-            pool: pool.poolId,
-            apy: analysis.apy,
-            tvl: analysis.tvl,
-            riskScore: analysis.riskScore,
-          });
-        } catch (error) {
-          console.warn(`Failed to analyze ${pool.poolId}:`, error);
-        }
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Scan failed');
       }
 
-      if (opportunities.length > 0) {
+      const scanResult = data.result;
+
+      // Emit events based on scan result
+      if (scanResult.action === 'reallocated') {
         this.emit({
-          type: 'opportunity',
+          type: 'execution',
           timestamp: Date.now(),
           data: {
-            opportunities: opportunities.sort((a, b) => b.apy - a.apy),
-            bestAPY: Math.max(...opportunities.map((o) => o.apy)),
+            status: 'completed',
+            details: scanResult.details,
+            txHash: scanResult.txHash,
+          },
+        });
+      } else if (scanResult.action === 'error') {
+        throw new Error(scanResult.details);
+      } else {
+        this.emit({
+          type: 'notification',
+          timestamp: Date.now(),
+          data: {
+            message: scanResult.details,
           },
         });
       }
@@ -249,7 +269,7 @@ export class ClientSideAgent {
       this.emit({
         type: 'scan',
         timestamp: Date.now(),
-        data: { status: 'completed', opportunities: opportunities.length },
+        data: { status: 'completed', result: scanResult },
       });
     } catch (error) {
       this.emit({
@@ -366,16 +386,22 @@ export class ClientSideAgent {
   }
 
   /**
-   * Private: Import skill dynamically (browser-compatible)
+   * Private: Call OpenClaw skill via API
    */
-  private async importSkill(skillName: string): Promise<any> {
-    // In browser, we need to fetch skills from API
-    // For now, this is a placeholder
-    const response = await fetch(`/api/skills/${skillName}`);
-    if (!response.ok) {
-      throw new Error(`Failed to load skill: ${skillName}`);
+  private async callSkill(skillName: string, method: string, args: any[] = []): Promise<any> {
+    const response = await fetch(`/api/skills/${skillName}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method, args }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || `Skill ${skillName}.${method} failed`);
     }
-    return response.json();
+
+    return data.result;
   }
 }
 

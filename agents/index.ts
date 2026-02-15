@@ -9,9 +9,10 @@ import { parse as parseYaml } from 'yaml';
 import { join } from 'path';
 
 // Import skills
-import getYields, { YieldData, analyzeYieldOpportunity } from './skills/getYields.js';
-import execSwap, { executeSwap, supplyToVenus, withdrawFromVenus, isSwapProfitable } from './skills/execSwap.js';
-import riskScanner, { analyzeProtocolRisk, checkAccountHealth, getRiskAdjustedRecommendations } from './skills/riskScanner.js';
+import * as getPoolData from './skills/getPoolData.js';
+import * as analyzePool from './skills/analyzePool.js';
+import * as execSwap from './skills/execSwap.js';
+import * as getPools from './skills/getPools.js';
 
 // Types
 interface AgentConfig {
@@ -74,9 +75,8 @@ export async function initializeAgent(
     throw new Error('SESSION_PRIVATE_KEY not configured. Please set up session key delegation.');
   }
 
-  // Check account health
-  const health = await checkAccountHealth(smartAccountAddress);
-  console.log(`📊 Account Health: ${health.liquidationRisk} risk, Health Factor: ${health.healthFactor}`);
+  // TODO: Implement account health check
+  console.log(`📊 Account initialized for ${smartAccountAddress}`);
 
   console.log(`✅ Agent initialized for ${smartAccountAddress}`);
   console.log(`   Risk Profile: ${riskProfile}`);
@@ -96,31 +96,45 @@ export async function scanAndOptimize(): Promise<{
   state.lastCheck = new Date();
 
   try {
-    // Get current yields
-    const yields = await getYields.getAllYields();
-    const allYields = [...yields.venus, ...yields.pancakeswap];
+    // Get all available pools
+    const allPools = await getPools.getAllPools();
 
-    console.log(`   Found ${allYields.length} yield opportunities`);
+    // Filter by risk profile
+    const riskFilteredPools = getPools.filterPoolsByRisk(allPools, state.riskProfile);
 
-    // Get risk-adjusted recommendations
-    const protocols = ['venus', 'pancakeswap'];
-    const recommendations = await getRiskAdjustedRecommendations(state.riskProfile, protocols);
+    console.log(`   Found ${riskFilteredPools.length} pools matching ${state.riskProfile} risk profile`);
 
-    if (recommendations.recommended.length === 0) {
-      return { action: 'none', details: 'No protocols meet risk criteria' };
+    if (riskFilteredPools.length === 0) {
+      return { action: 'none', details: 'No pools meet risk criteria' };
     }
 
-    // Get best yield for current risk profile
-    const bestYields = await getYields.getBestYields(state.riskProfile, config.strategy.minAPYImprovement, 5);
+    // Analyze each pool to get APY data
+    const poolAnalyses = await Promise.all(
+      riskFilteredPools.slice(0, 10).map(pool =>
+        analyzePool.analyzePool(pool.poolId, pool.address)
+          .catch(() => null)
+      )
+    );
 
-    if (bestYields.length === 0) {
-      return { action: 'none', details: 'No yields meet minimum APY threshold' };
+    const validAnalyses = poolAnalyses.filter((a): a is NonNullable<typeof a> => a !== null);
+
+    if (validAnalyses.length === 0) {
+      return { action: 'none', details: 'Could not analyze any pools' };
     }
 
-    const bestYield = bestYields[0];
-    console.log(`   Best opportunity: ${bestYield.protocol} ${bestYield.pool} at ${bestYield.apy}% APY`);
+    // Sort by APY
+    validAnalyses.sort((a, b) => b.apy - a.apy);
+    const bestPool = validAnalyses[0];
+
+    console.log(`   Best opportunity: ${bestPool.protocol} ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY`);
 
     // Check if we have existing positions to compare
+    if (state.currentPositions.size === 0) {
+      console.log(`   No existing positions. Consider starting with ${bestPool.poolId}`);
+      return { action: 'none', details: `Best pool: ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY` };
+    }
+
+    // Check existing positions for reallocation opportunities
     for (const [positionId, position] of state.currentPositions) {
       // Check minimum holding period
       const daysSinceEntry = (Date.now() - position.entryDate.getTime()) / (1000 * 60 * 60 * 24);
@@ -129,45 +143,46 @@ export async function scanAndOptimize(): Promise<{
         continue;
       }
 
-      // Analyze if reallocation is worth it
-      const analysis = await analyzeYieldOpportunity(
-        position.protocol,
-        position.asset,
+      // Find current pool data
+      const currentPool = allPools.find(p => p.poolId === positionId);
+      if (!currentPool) {
+        console.log(`   Could not find pool data for ${positionId}`);
+        continue;
+      }
+
+      // Check if best pool is significantly better
+      const apyDifference = bestPool.apy - position.apy;
+      if (apyDifference < config.strategy.minAPYImprovement) {
+        console.log(`   APY improvement too small: +${apyDifference.toFixed(2)}%`);
+        continue;
+      }
+
+      console.log(`   📈 Reallocation opportunity: +${apyDifference.toFixed(2)}% APY`);
+
+      // Check profitability after gas
+      const profitability = await execSwap.isSwapProfitable(
+        {
+          tokenIn: currentPool.underlyingTokens?.[0] || currentPool.address,
+          tokenOut: bestPool.assets[0],
+          amountIn: '1000', // Example amount
+          slippageTolerance: config.riskProfiles[state.riskProfile].maxSlippage,
+          recipient: state.smartAccountAddress!,
+        },
         position.apy,
-        state.riskProfile
+        bestPool.apy
       );
 
-      if (analysis.shouldReallocate && analysis.bestYield) {
-        console.log(`   📈 Reallocation recommended: ${analysis.recommendation}`);
+      if (profitability.profitable) {
+        console.log(`   💰 ${profitability.recommendation}`);
 
-        // Check profitability after gas
-        const profitability = await isSwapProfitable(
-          {
-            tokenIn: position.asset,
-            tokenOut: analysis.bestYield.asset,
-            amountIn: '1000', // Example amount
-            slippageTolerance: config.riskProfiles[state.riskProfile].maxSlippage,
-            recipient: state.smartAccountAddress!,
-          },
-          position.apy,
-          analysis.bestYield.apy
-        );
-
-        if (profitability.profitable) {
-          console.log(`   💰 ${profitability.recommendation}`);
-
-          // Execute the reallocation
-          // 1. Withdraw from current position
-          // 2. Swap if needed
-          // 3. Supply to new position
-
-          return {
-            action: 'reallocated',
-            details: `Moved from ${position.protocol} to ${analysis.bestYield.protocol} for +${analysis.apyDifference.toFixed(2)}% APY`,
-          };
-        } else {
-          console.log(`   ⏳ ${profitability.recommendation}`);
-        }
+        // TODO: Execute the reallocation using execSwap.executeReallocation
+        // For now, just return the recommendation
+        return {
+          action: 'none',
+          details: `Reallocation recommended: ${currentPool.name} → ${bestPool.poolId} (+${apyDifference.toFixed(2)}% APY)`,
+        };
+      } else {
+        console.log(`   ⏳ ${profitability.recommendation}`);
       }
     }
 
@@ -230,14 +245,10 @@ export function getAgentStatus(): {
 
 // Export skills for direct access
 export {
-  getYields,
+  getPoolData,
+  getPools,
+  analyzePool,
   execSwap,
-  riskScanner,
-  executeSwap,
-  supplyToVenus,
-  withdrawFromVenus,
-  analyzeProtocolRisk,
-  checkAccountHealth,
 };
 
 // CLI entry point

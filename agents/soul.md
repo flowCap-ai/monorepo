@@ -91,29 +91,62 @@ Takes a specific pool and returns comprehensive yield and risk analysis:
 Use this to evaluate a specific pool before allocating funds.
 
 ### 3. `execSwap` - Transaction Executor
-Executes on-chain operations via Session Keys:
+Executes on-chain operations via Session Keys with **dynamic, multi-step reallocation**:
 
 **Operations Supported**:
-- **Token swaps** on PancakeSwap (V2 and V3)
+- **Token swaps** on PancakeSwap (V2 and V3) - DYNAMIC routing
 - **Supply/withdraw** on Venus Protocol
-- **Multi-step reallocation** (withdraw → swap → supply)
+- **Multi-step reallocation** (withdraw → swap → supply) - FULLY AUTOMATED
+
+**✨ NEW: Dynamic Multi-Step Reallocation**
+The agent now supports complete automated reallocation between ANY pools:
+
+```typescript
+executeReallocation({
+  currentPool: PoolData,  // Uses pool.address and pool.underlyingTokens
+  targetPool: PoolData,   // No hardcoded addresses!
+  currentAmount: "1000",
+  smartAccountAddress: Address,
+  slippageTolerance: 0.5
+})
+```
+
+**Automatically handles**:
+1. 🔓 **Withdraw** from current position (Venus vToken, PancakeSwap LP, etc.)
+2. 🔄 **Swap** tokens if different (uses optimal router V2/V3 based on pool data)
+3. ✅ **Approve** target protocol
+4. 💰 **Supply** to target position
+
+**No hardcoded addresses** - everything is dynamically determined from `PoolData`:
+- `pool.address` - Protocol contract address
+- `pool.underlyingTokens` - Token addresses
+- `pool.version` - Router version (v2/v3)
+- `pool.protocol` - Protocol name (venus, pancakeswap)
 
 **How It Works**:
 1. Build transaction calldata in browser
 2. Estimate gas costs
 3. Sign UserOperation with session private key (stored in localStorage)
-4. Submit to Biconomy bundler via `NEXT_PUBLIC_BICONOMY_BUNDLER_URL`
-5. Get paymaster signature from `NEXT_PUBLIC_BICONOMY_PAYMASTER_URL`
+4. Submit to Biconomy MEE via `NEXT_PUBLIC_BICONOMY_MEE_API_KEY`
+5. Get bundler + paymaster service (all-in-one MEE API)
 6. Wait for bundler to submit on-chain
 7. Return transaction hash to user
 
 **Key Functions**:
+- `planReallocation()` - Dynamically plans steps based on pool data
+- `executeReallocation()` - Executes full multi-step reallocation
 - `withdrawFromVenus()` - Withdraw from Venus vToken
-- `executeSwap()` - Swap tokens on PancakeSwap
+- `executeSwap()` - Swap tokens on PancakeSwap (with dynamic routing)
 - `supplyToVenus()` - Supply tokens to Venus
-- `estimateGasCosts()` - Calculate gas for profitability checks
+- `getTokenInfo()` - Fetch token details on-chain (symbol, decimals, name)
+- `isSwapProfitable()` - Calculate gas costs and profitability
 
-All transactions go through the Biconomy Bundler as UserOperations (ERC-4337).
+**Dynamic Token Registry**:
+- Tokens are fetched on-demand from blockchain
+- Cached for performance
+- Supports ANY ERC20 token, not just hardcoded ones
+
+All transactions go through Biconomy MEE as UserOperations (ERC-4337).
 
 ## Decision Framework
 

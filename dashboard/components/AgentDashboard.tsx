@@ -58,15 +58,15 @@ export default function AgentDashboard() {
     try {
       console.log('🚀 Starting FlowCap Agent...');
 
-      // Step 1: Validate investment amount
-      const maxInvestmentUSD = parseFloat(maxInvestment);
-      if (isNaN(maxInvestmentUSD) || maxInvestmentUSD < 10) {
-        throw new Error('Minimum investment is $10');
+      // Step 1: Validate delegation amount
+      const totalDelegationUSD = parseFloat(maxInvestment);
+      if (isNaN(totalDelegationUSD) || totalDelegationUSD < 1) {
+        throw new Error('Minimum delegation is $1');
       }
 
       // Validate against risk profile limits
       const riskLimits = { low: 5000, medium: 10000, high: 50000 };
-      if (maxInvestmentUSD > riskLimits[riskProfile]) {
+      if (totalDelegationUSD > riskLimits[riskProfile]) {
         throw new Error(`${riskProfile.toUpperCase()} risk profile maximum is $${riskLimits[riskProfile].toLocaleString()}`);
       }
 
@@ -74,13 +74,13 @@ export default function AgentDashboard() {
       const smartAccount = await createSmartAccount(address);
       console.log('✅ Smart account:', smartAccount.address);
 
-      // Convert USD to Wei (assuming 1:1 for stablecoins, adjust for other tokens)
-      const maxValueWei = BigInt(Math.floor(maxInvestmentUSD * 1e18));
+      // Convert USD to Wei - this is the TOTAL amount the session can trade with
+      const totalDelegationWei = BigInt(Math.floor(totalDelegationUSD * 1e18));
 
-      // Step 3: Generate session key with risk-based permissions AND custom value limit
-      const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile, maxValueWei);
+      // Step 3: Generate session key with risk-based permissions AND total delegation limit
+      const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile, totalDelegationWei);
       console.log('✅ Session key generated with', riskProfile, 'risk permissions');
-      console.log('Max investment per transaction:', maxInvestmentUSD, 'USD');
+      console.log('Total delegation amount:', totalDelegationUSD, 'USD');
 
       // Step 4: User signs delegation message
       const message = `FlowCap Agent Delegation
@@ -90,11 +90,11 @@ I authorize the FlowCap agent to manage my yield positions with these restrictio
 Smart Account: ${smartAccount.address}
 Session Key: ${sessionKeyData.sessionAddress}
 Risk Profile: ${riskProfile.toUpperCase()}
-Max Per Transaction: $${maxInvestmentUSD.toLocaleString()} USD
+Total Delegated: $${totalDelegationUSD.toLocaleString()} USD
 Valid Until: ${new Date(sessionKeyData.validUntil * 1000).toLocaleString()}
 
 SECURITY GUARANTEES:
-✓ Agent can use up to $${maxInvestmentUSD.toLocaleString()} per transaction
+✓ Agent can trade with TOTAL of $${totalDelegationUSD.toLocaleString()} (entire session)
 ✓ Agent can ONLY swap and supply/withdraw on allowed protocols
 ✓ Agent CANNOT transfer funds to external addresses
 ✓ Session expires in 7 days
@@ -187,24 +187,24 @@ By signing, I start my personal AI agent.`;
             servers or configuration needed!
           </p>
 
-          {/* Investment Amount */}
+          {/* Total Delegation Amount */}
           <div className="mb-6">
-            <label className="block text-sm font-semibold mb-2 text-gray-300 font-mono">MAX INVESTMENT PER TRANSACTION:</label>
+            <label className="block text-sm font-semibold mb-2 text-gray-300 font-mono">TOTAL AMOUNT TO DELEGATE:</label>
             <div className="relative">
               <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-mono text-lg">$</span>
               <input
                 type="number"
                 value={maxInvestment}
                 onChange={(e) => setMaxInvestment(e.target.value)}
-                min="10"
+                min="1"
                 max="50000"
-                step="10"
+                step="1"
                 className="w-full pl-10 pr-4 py-3 bg-black border-2 border-gray-700 rounded-lg text-white font-mono text-lg focus:border-orange-500 focus:outline-none"
                 placeholder="1000"
               />
             </div>
             <p className="text-xs text-gray-500 mt-2 font-mono">
-              💡 Agent can use up to this amount per transaction. Minimum: $10
+              💡 Total funds the agent can trade with during this session. Minimum: $1
             </p>
           </div>
 

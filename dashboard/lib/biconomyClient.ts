@@ -8,8 +8,10 @@ import { bsc } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   createMeeClient,
-  PaymasterMode
-} from '@biconomy/account';
+  toMultichainNexusAccount,
+  getMEEVersion,
+  MEEVersion
+} from '@biconomy/abstractjs';
 
 // Session key permission structure
 export interface SessionKeyPermission {
@@ -36,41 +38,38 @@ export interface SmartAccount {
  * Uses Biconomy SDK to get the counterfactual smart account address
  */
 export async function createSmartAccount(ownerAddress: Address): Promise<SmartAccount> {
-  const meeApiKey = process.env.NEXT_PUBLIC_BICONOMY_MEE_API_KEY;
-
-  if (!meeApiKey || meeApiKey.includes('YOUR')) {
-    console.warn('⚠️ Biconomy MEE API key not configured - using placeholder address');
-    return {
-      address: ownerAddress, // Fallback to EOA
-      owner: ownerAddress,
-    };
-  }
-
   try {
     // Get user's wallet provider (MetaMask, WalletConnect, etc.)
     if (typeof window === 'undefined' || !window.ethereum) {
       throw new Error('No wallet provider found');
     }
 
-    // Create wallet client from browser wallet
+    // Create wallet client from browser wallet (acts as signer)
     const walletClient = createWalletClient({
       account: ownerAddress,
       chain: bsc,
       transport: custom(window.ethereum),
     });
 
-    // Create Biconomy MEE Client (single API key for everything!)
-    const meeClient = await createMeeClient({
-      account: walletClient as any,
-      apiKey: meeApiKey,
+    // Create Multichain Nexus Account (NEW Biconomy AbstractJS SDK)
+    const account = await toMultichainNexusAccount({
+      signer: walletClient as any,
+      chainConfigurations: [
+        {
+          chain: bsc,
+          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
+          version: getMEEVersion(MEEVersion.V2_1_0),
+        },
+      ],
     });
 
-    const smartAccountAddress = await meeClient.getAccountAddress();
+    // Get smart account address for BSC
+    const smartAccountAddress = account.addressOn(bsc.id) as Address;
 
-    console.log('✅ Biconomy Smart Account created via MEE:', smartAccountAddress);
+    console.log('✅ Biconomy Smart Account created:', smartAccountAddress);
 
     return {
-      address: smartAccountAddress as Address,
+      address: smartAccountAddress,
       owner: ownerAddress,
     };
   } catch (error) {
@@ -85,12 +84,13 @@ export async function createSmartAccount(ownerAddress: Address): Promise<SmartAc
 
 /**
  * Generate a new session key with permissions based on risk profile
- * @param maxValuePerTx - Maximum value per transaction in Wei (e.g., 1000 USD = 1000 * 1e18 Wei)
+ * @param totalDelegationAmount - TOTAL amount delegated for the entire session in Wei (e.g., 1000 USD = 1000 * 1e18 Wei)
+ *                                 The agent can only trade with this total amount during the session lifetime
  */
 export function generateSessionKey(
   smartAccountAddress: Address,
   riskProfile: 'low' | 'medium' | 'high',
-  maxValuePerTx?: bigint
+  totalDelegationAmount?: bigint
 ): SessionKeyData {
   // Generate random private key for session
   const sessionPrivateKey = generateRandomPrivateKey();
@@ -101,8 +101,8 @@ export function generateSessionKey(
   const validAfter = now;
   const validUntil = now + 7 * 24 * 60 * 60; // 7 days
 
-  // Build FlowCap permissions based on risk profile and custom value limit
-  const permissions = buildFlowCapPermissions(riskProfile, maxValuePerTx);
+  // Build FlowCap permissions based on risk profile and total delegation limit
+  const permissions = buildFlowCapPermissions(riskProfile, totalDelegationAmount);
 
   return {
     sessionAddress: sessionAccount.address,
@@ -120,11 +120,12 @@ export function generateSessionKey(
  * - MEDIUM: Stablecoins + BNB on Venus + PancakeSwap stablecoin pairs
  * - HIGH: All tokens including volatile assets (ETH, BTCB, CAKE)
  *
- * @param maxValuePerTx - User-defined maximum value per transaction (overrides defaults)
+ * @param totalDelegationAmount - TOTAL amount the user delegates for the session (not per-transaction!)
+ *                                 The session can trade with up to this total amount
  */
 function buildFlowCapPermissions(
   riskProfile: 'low' | 'medium' | 'high',
-  maxValuePerTx?: bigint
+  totalDelegationAmount?: bigint
 ): SessionKeyPermission[] {
   // Function selectors
   const SWAP_EXACT_TOKENS_FOR_TOKENS = '0x38ed1739'; // PancakeSwap
@@ -157,47 +158,47 @@ function buildFlowCapPermissions(
 
   const permissions: SessionKeyPermission[] = [];
 
-  // Transaction value limits by risk profile (defaults)
-  const DEFAULT_MAX_TX_VALUE = {
-    low: BigInt('5000000000000000000000'), // 5k USD
-    medium: BigInt('10000000000000000000000'), // 10k USD
-    high: BigInt('50000000000000000000000'), // 50k USD
+  // Total session delegation limits by risk profile (defaults)
+  const DEFAULT_DELEGATION_LIMIT = {
+    low: BigInt('5000000000000000000000'), // 5k USD total
+    medium: BigInt('10000000000000000000000'), // 10k USD total
+    high: BigInt('50000000000000000000000'), // 50k USD total
   }[riskProfile];
 
-  // Use custom value limit if provided, otherwise use risk profile default
-  // Also enforce that custom value doesn't exceed risk profile maximum
-  const MAX_TX_VALUE = maxValuePerTx
-    ? (maxValuePerTx < DEFAULT_MAX_TX_VALUE ? maxValuePerTx : DEFAULT_MAX_TX_VALUE)
-    : DEFAULT_MAX_TX_VALUE;
+  // Use custom delegation amount if provided, otherwise use risk profile default
+  // Also enforce that custom amount doesn't exceed risk profile maximum
+  const TOTAL_DELEGATION = totalDelegationAmount
+    ? (totalDelegationAmount < DEFAULT_DELEGATION_LIMIT ? totalDelegationAmount : DEFAULT_DELEGATION_LIMIT)
+    : DEFAULT_DELEGATION_LIMIT;
 
-  console.log(`💰 Max transaction value: ${Number(MAX_TX_VALUE) / 1e18} USD (risk: ${riskProfile})`);
+  console.log(`💰 Total session delegation: ${Number(TOTAL_DELEGATION) / 1e18} USD (risk: ${riskProfile})`);
 
   // === LOW RISK PROFILE ===
   // Only stablecoins on Venus lending (no swaps, no volatile assets)
   if (riskProfile === 'low') {
     // Venus USDT
     permissions.push(
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE }
+      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // Venus USDC
     permissions.push(
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE }
+      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // Venus BUSD
     permissions.push(
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE }
+      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // Token approvals (stablecoins only)
     permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE }
+      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
     );
   }
 
@@ -207,35 +208,35 @@ function buildFlowCapPermissions(
     // All low risk permissions
     permissions.push(
       // Venus USDT
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
+      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
 
       // Venus USDC
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
+      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
 
       // Venus BUSD
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
+      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
 
       // Venus BNB (added for medium)
-      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE }
+      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // PancakeSwap swaps (stablecoin pairs + BNB pairs only)
     permissions.push(
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: MAX_TX_VALUE }
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // Token approvals (stablecoins + BNB)
     permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE }
+      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
     );
   }
 
@@ -245,46 +246,46 @@ function buildFlowCapPermissions(
     // All Venus markets
     permissions.push(
       // Stablecoins
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
+      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
 
       // BNB
-      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
+      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
 
       // Volatile assets (ETH, BTCB)
-      { target: VENUS_VETH, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VETH, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBTCB, functionSelector: MINT as Hex, valueLimit: MAX_TX_VALUE },
-      { target: VENUS_VBTCB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: MAX_TX_VALUE }
+      { target: VENUS_VETH, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VETH, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBTCB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: VENUS_VBTCB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // All PancakeSwap routers (V2 and V3)
     permissions.push(
       // V2
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: MAX_TX_VALUE },
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION },
 
       // V3
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: MAX_TX_VALUE },
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: MAX_TX_VALUE }
+      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION }
     );
 
     // All token approvals
     permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: ETH_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: BTCB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE },
-      { target: CAKE_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: MAX_TX_VALUE }
+      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: ETH_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: BTCB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
+      { target: CAKE_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
     );
   }
 
@@ -330,7 +331,7 @@ export async function delegateSessionKey(
   const meeApiKey = process.env.NEXT_PUBLIC_BICONOMY_MEE_API_KEY;
 
   if (!meeApiKey || meeApiKey.includes('YOUR')) {
-    console.warn('⚠️ Biconomy MEE not configured - using optimistic mode');
+    console.warn('⚠️ Biconomy not configured - using optimistic mode');
     console.log('Session key stored locally only (no on-chain delegation)');
     return {
       success: true,
@@ -351,9 +352,21 @@ export async function delegateSessionKey(
       transport: custom(window.ethereum),
     });
 
-    // Create Biconomy MEE Client
+    // Create Multichain Nexus Account
+    const account = await toMultichainNexusAccount({
+      signer: walletClient as any,
+      chainConfigurations: [
+        {
+          chain: bsc,
+          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
+          version: getMEEVersion(MEEVersion.V2_1_0),
+        },
+      ],
+    });
+
+    // Create MEE Client with API key for gas sponsorship
     const meeClient = await createMeeClient({
-      account: walletClient as any,
+      account,
       apiKey: meeApiKey,
     });
 
@@ -378,13 +391,19 @@ export async function delegateSessionKey(
       value: BigInt(0),
     };
 
-    // Send the transaction with gas sponsorship via MEE Client
-    const userOpResponse = await meeClient.sendTransaction(enableSessionTx, {
-      paymasterServiceData: { mode: PaymasterMode.SPONSORED },
+    // Send the transaction with gas sponsorship via MEE
+    const userOpResponse = await meeClient.sendTransaction({
+      chainId: bsc.id,
+      calls: [{
+        to: enableSessionTx.to,
+        data: enableSessionTx.data,
+        value: enableSessionTx.value,
+      }],
+      sponsorship: { mode: 'auto' }, // Auto gas sponsorship
     });
 
     // Wait for transaction confirmation
-    const { transactionHash } = await userOpResponse.waitForTxHash();
+    const transactionHash = userOpResponse.hash;
 
     console.log('✅ Session key delegated on-chain!');
     console.log('Transaction:', `https://bscscan.com/tx/${transactionHash}`);
@@ -485,9 +504,21 @@ export async function submitUserOperation(
       transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
     });
 
-    // Create MEE Client with SESSION KEY as signer
+    // Create Multichain Nexus Account with SESSION KEY as signer
+    const account = await toMultichainNexusAccount({
+      signer: sessionWalletClient as any,
+      chainConfigurations: [
+        {
+          chain: bsc,
+          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
+          version: getMEEVersion(MEEVersion.V2_1_0),
+        },
+      ],
+    });
+
+    // Create MEE Client with gas sponsorship
     const meeClient = await createMeeClient({
-      account: sessionWalletClient as any,
+      account,
       apiKey: meeApiKey,
     });
 
@@ -498,39 +529,25 @@ export async function submitUserOperation(
       data: transaction.data.slice(0, 10) + '...',
     });
 
-    // Send transaction with gas sponsorship via MEE
-    const userOpResponse = await meeClient.sendTransaction(transaction, {
-      paymasterServiceData: { mode: PaymasterMode.SPONSORED },
+    // Send transaction with auto gas sponsorship
+    const result = await meeClient.sendTransaction({
+      chainId: bsc.id,
+      calls: [{
+        to: transaction.to,
+        data: transaction.data,
+        value: transaction.value || BigInt(0),
+      }],
+      sponsorship: { mode: 'auto' },
     });
 
-    console.log('⏳ Waiting for UserOp confirmation...');
+    console.log('✅ UserOp executed successfully!');
+    console.log('Transaction:', `https://bscscan.com/tx/${result.hash}`);
 
-    // Wait for transaction to be mined
-    const receipt: any = await userOpResponse.wait();
-
-    if (receipt.success) {
-      // Extract transaction hash from receipt (can be in different places)
-      const txHash = receipt.receipt?.transactionHash || (receipt as any).transactionHash || '';
-
-      console.log('✅ UserOp executed successfully!');
-      console.log('UserOp Hash:', receipt.userOpHash);
-      if (txHash) {
-        console.log('Transaction:', `https://bscscan.com/tx/${txHash}`);
-      }
-
-      return {
-        userOpHash: receipt.userOpHash || '',
-        txHash: txHash,
-        success: true,
-      };
-    } else {
-      console.error('❌ UserOp failed');
-      return {
-        userOpHash: receipt.userOpHash || '',
-        success: false,
-        error: 'Transaction reverted',
-      };
-    }
+    return {
+      userOpHash: result.hash,
+      txHash: result.hash,
+      success: true,
+    };
   } catch (error: any) {
     console.error('❌ Failed to submit UserOp:', error);
 
