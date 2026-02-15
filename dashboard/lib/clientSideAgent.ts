@@ -1,10 +1,12 @@
 /**
  * Client-Side OpenClaw Agent Runner
  * Runs directly in the user's browser - no server needed!
+ * Now supports Service Worker for background execution
  */
 
 import type { Address, Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { getServiceWorkerManager } from './serviceWorkerManager';
 
 export interface AgentSession {
   userAddress: Address;
@@ -24,21 +26,54 @@ export interface AgentEvent {
 /**
  * Client-Side Agent Runner
  * Runs OpenClaw agent directly in the user's browser
+ * Uses Service Worker for background execution
  */
 export class ClientSideAgent {
   private session: AgentSession | null = null;
   private intervalId: NodeJS.Timeout | null = null;
   private eventListeners: ((event: AgentEvent) => void)[] = [];
+  private useServiceWorker: boolean = false;
+  private swManager = getServiceWorkerManager();
 
   /**
    * Initialize agent with session key (signed in browser)
    */
-  async initialize(session: AgentSession): Promise<void> {
+  async initialize(session: AgentSession, options?: { useServiceWorker?: boolean }): Promise<void> {
     this.session = session;
+    this.useServiceWorker = options?.useServiceWorker ?? false;
+
+    // Register service worker if enabled
+    if (this.useServiceWorker && typeof window !== 'undefined') {
+      const registered = await this.swManager.register();
+      if (registered) {
+        console.log('✅ Service Worker enabled - agent will run in background');
+
+        // Request notification permission
+        await this.swManager.requestNotificationPermission();
+
+        // Initialize agent in service worker
+        await this.swManager.initializeAgent(session);
+
+        // Listen for messages from service worker
+        this.swManager.on('notification', (event) => this.emit(event));
+        this.swManager.on('scan', (event) => this.emit(event));
+        this.swManager.on('opportunity', (event) => this.emit(event));
+        this.swManager.on('error', (event) => this.emit(event));
+        this.swManager.on('execution', (event) => this.emit(event));
+      } else {
+        console.warn('⚠️ Service Worker not available - falling back to tab-only mode');
+        this.useServiceWorker = false;
+      }
+    }
+
     this.emit({
       type: 'notification',
       timestamp: Date.now(),
-      data: { message: '🤖 Agent initialized successfully!' },
+      data: {
+        message: this.useServiceWorker
+          ? '🤖 Agent initialized with background support!'
+          : '🤖 Agent initialized (tab-only mode)!'
+      },
     });
   }
 
@@ -56,6 +91,13 @@ export class ClientSideAgent {
 
     this.session.status = 'running';
 
+    // If using service worker, delegate to it
+    if (this.useServiceWorker) {
+      await this.swManager.startAgent();
+      return;
+    }
+
+    // Otherwise, run in main thread
     this.emit({
       type: 'notification',
       timestamp: Date.now(),
@@ -72,7 +114,15 @@ export class ClientSideAgent {
   /**
    * Stop the agent
    */
-  stop(): void {
+  async stop(): Promise<void> {
+    if (this.useServiceWorker) {
+      await this.swManager.stopAgent();
+      if (this.session) {
+        this.session.status = 'stopped';
+      }
+      return;
+    }
+
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
@@ -92,7 +142,15 @@ export class ClientSideAgent {
   /**
    * Pause the agent (can be resumed)
    */
-  pause(): void {
+  async pause(): Promise<void> {
+    if (this.useServiceWorker) {
+      await this.swManager.pauseAgent();
+      if (this.session) {
+        this.session.status = 'paused';
+      }
+      return;
+    }
+
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;

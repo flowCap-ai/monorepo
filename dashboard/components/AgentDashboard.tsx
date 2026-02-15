@@ -7,7 +7,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
-import { createSmartAccount, generateSessionKey } from '../lib/biconomyClient';
+import { createSmartAccount, generateSessionKey, delegateSessionKey } from '../lib/biconomyClient';
 import { getAgent, type AgentEvent, type AgentSession } from '../lib/clientSideAgent';
 
 type RiskProfile = 'low' | 'medium' | 'high';
@@ -17,6 +17,7 @@ export default function AgentDashboard() {
   const { signMessageAsync } = useSignMessage();
 
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('low');
+  const [maxInvestment, setMaxInvestment] = useState<string>('1000'); // USD amount
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,15 +58,31 @@ export default function AgentDashboard() {
     try {
       console.log('🚀 Starting FlowCap Agent...');
 
-      // Step 1: Create/get smart account
+      // Step 1: Validate investment amount
+      const maxInvestmentUSD = parseFloat(maxInvestment);
+      if (isNaN(maxInvestmentUSD) || maxInvestmentUSD < 10) {
+        throw new Error('Minimum investment is $10');
+      }
+
+      // Validate against risk profile limits
+      const riskLimits = { low: 5000, medium: 10000, high: 50000 };
+      if (maxInvestmentUSD > riskLimits[riskProfile]) {
+        throw new Error(`${riskProfile.toUpperCase()} risk profile maximum is $${riskLimits[riskProfile].toLocaleString()}`);
+      }
+
+      // Step 2: Create/get smart account
       const smartAccount = await createSmartAccount(address);
       console.log('✅ Smart account:', smartAccount.address);
 
-      // Step 2: Generate session key
-      const sessionKeyData = generateSessionKey(smartAccount.address);
-      console.log('✅ Session key generated');
+      // Convert USD to Wei (assuming 1:1 for stablecoins, adjust for other tokens)
+      const maxValueWei = BigInt(Math.floor(maxInvestmentUSD * 1e18));
 
-      // Step 3: User signs delegation message
+      // Step 3: Generate session key with risk-based permissions AND custom value limit
+      const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile, maxValueWei);
+      console.log('✅ Session key generated with', riskProfile, 'risk permissions');
+      console.log('Max investment per transaction:', maxInvestmentUSD, 'USD');
+
+      // Step 4: User signs delegation message
       const message = `FlowCap Agent Delegation
 
 I authorize the FlowCap agent to manage my yield positions with these restrictions:
@@ -73,9 +90,11 @@ I authorize the FlowCap agent to manage my yield positions with these restrictio
 Smart Account: ${smartAccount.address}
 Session Key: ${sessionKeyData.sessionAddress}
 Risk Profile: ${riskProfile.toUpperCase()}
+Max Per Transaction: $${maxInvestmentUSD.toLocaleString()} USD
 Valid Until: ${new Date(sessionKeyData.validUntil * 1000).toLocaleString()}
 
 SECURITY GUARANTEES:
+✓ Agent can use up to $${maxInvestmentUSD.toLocaleString()} per transaction
 ✓ Agent can ONLY swap and supply/withdraw on allowed protocols
 ✓ Agent CANNOT transfer funds to external addresses
 ✓ Session expires in 7 days
@@ -85,7 +104,24 @@ By signing, I start my personal AI agent.`;
       await signMessageAsync({ message });
       console.log('✅ Delegation signed');
 
-      // Step 4: Initialize agent with session
+      // Step 4: Delegate session key on-chain
+      const delegationResult = await delegateSessionKey(
+        address,
+        smartAccount.address,
+        sessionKeyData
+      );
+
+      if (!delegationResult.success) {
+        throw new Error(`Session key delegation failed: ${delegationResult.error}`);
+      }
+
+      if (delegationResult.txHash) {
+        console.log('✅ Session key delegated on-chain:', delegationResult.txHash);
+      } else {
+        console.log('⚠️ Session key registered (optimistic mode - no on-chain tx yet)');
+      }
+
+      // Step 5: Initialize agent with session
       const session: AgentSession = {
         userAddress: address,
         smartAccountAddress: smartAccount.address,
@@ -95,11 +131,12 @@ By signing, I start my personal AI agent.`;
         status: 'idle',
       };
 
-      await agent.initialize(session);
+      // Enable Service Worker for background execution
+      await agent.initialize(session, { useServiceWorker: true });
       setAgentSession(session);
       console.log('✅ Agent initialized');
 
-      // Step 5: Start the agent!
+      // Step 6: Start the agent!
       await agent.start();
       console.log('✅ Agent started!');
 
@@ -150,6 +187,27 @@ By signing, I start my personal AI agent.`;
             servers or configuration needed!
           </p>
 
+          {/* Investment Amount */}
+          <div className="mb-6">
+            <label className="block text-sm font-semibold mb-2 text-gray-300 font-mono">MAX INVESTMENT PER TRANSACTION:</label>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-mono text-lg">$</span>
+              <input
+                type="number"
+                value={maxInvestment}
+                onChange={(e) => setMaxInvestment(e.target.value)}
+                min="10"
+                max="50000"
+                step="10"
+                className="w-full pl-10 pr-4 py-3 bg-black border-2 border-gray-700 rounded-lg text-white font-mono text-lg focus:border-orange-500 focus:outline-none"
+                placeholder="1000"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-2 font-mono">
+              💡 Agent can use up to this amount per transaction. Minimum: $10
+            </p>
+          </div>
+
           {/* Risk Profile Selection */}
           <div className="mb-6">
             <label className="block text-sm font-semibold mb-2 text-gray-300 font-mono">SELECT RISK PROFILE:</label>
@@ -164,6 +222,7 @@ By signing, I start my personal AI agent.`;
               >
                 <div className="font-semibold text-green-400 font-mono">🛡️ LOW</div>
                 <div className="text-xs text-gray-500 mt-1 font-mono">Stablecoins only</div>
+                <div className="text-xs text-gray-600 mt-1 font-mono">Max: $5,000</div>
               </button>
 
               <button
@@ -176,18 +235,20 @@ By signing, I start my personal AI agent.`;
               >
                 <div className="font-semibold text-orange-400 font-mono">⚖️ MEDIUM</div>
                 <div className="text-xs text-gray-500 mt-1 font-mono">+ Liquid staking</div>
+                <div className="text-xs text-gray-600 mt-1 font-mono">Max: $10,000</div>
               </button>
 
               <button
                 onClick={() => setRiskProfile('high')}
                 className={`p-4 border-2 rounded-lg transition ${
                   riskProfile === 'high'
-                    ? 'border-orange-500 bg-orange-500/10'
-                    : 'border-gray-700 hover:border-orange-500/50 bg-black'
+                    ? 'border-red-500 bg-red-500/10'
+                    : 'border-gray-700 hover:border-red-500/50 bg-black'
                 }`}
               >
-                <div className="font-semibold text-orange-400 font-mono">🚀 HIGH</div>
+                <div className="font-semibold text-red-400 font-mono">🚀 HIGH</div>
                 <div className="text-xs text-gray-500 mt-1 font-mono">+ Volatile assets</div>
+                <div className="text-xs text-gray-600 mt-1 font-mono">Max: $50,000</div>
               </button>
             </div>
           </div>
