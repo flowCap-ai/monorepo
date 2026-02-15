@@ -7,7 +7,7 @@ import { createPublicClient, http, formatUnits, type Address } from 'viem';
 import { bsc } from 'viem/chains';
 
 const BNB_RPC_URL = process.env.BNB_RPC_URL || 'https://1rpc.io/bnb';
-const DEFILLAMA_API_URL = 'https://yields.llama.fi';
+const DEFILLAMA_API_URL = process.env.DEFILLAMA_API_URL || 'https://yields.llama.fi';
 
 const client = createPublicClient({
   chain: bsc,

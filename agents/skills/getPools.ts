@@ -5,7 +5,8 @@
 
 import type { Address } from 'viem';
 
-const VENUS_API_URL = 'https://api.venus.io';
+const VENUS_API_URL = process.env.VENUS_API_URL || 'https://api.venus.io';
+const DEFILLAMA_POOLS_URL = `${process.env.DEFILLAMA_API_URL || 'https://yields.llama.fi'}/pools`;
 
 export interface PoolInfo {
   protocol: 'venus' | 'pancakeswap' | 'lista-lending' | 'lista-staking' | 'alpaca';
@@ -76,7 +77,7 @@ export async function getPancakeSwapPools(): Promise<PoolInfo[]> {
   const pools: PoolInfo[] = [];
 
   try {
-    const response = await fetch('https://yields.llama.fi/pools');
+    const response = await fetch(DEFILLAMA_POOLS_URL);
     if (!response.ok) return pools;
 
     const data = await response.json() as { data?: any[] };
@@ -124,7 +125,7 @@ export async function getListaPools(): Promise<PoolInfo[]> {
   const pools: PoolInfo[] = [];
 
   try {
-    const response = await fetch('https://yields.llama.fi/pools');
+    const response = await fetch(DEFILLAMA_POOLS_URL);
     if (!response.ok) return pools;
 
     const data = await response.json() as { data?: any[] };
@@ -177,7 +178,7 @@ export async function getAlpacaPools(): Promise<PoolInfo[]> {
   const pools: PoolInfo[] = [];
 
   try {
-    const response = await fetch('https://yields.llama.fi/pools');
+    const response = await fetch(DEFILLAMA_POOLS_URL);
     if (!response.ok) return pools;
 
     const data = await response.json() as { data?: any[] };

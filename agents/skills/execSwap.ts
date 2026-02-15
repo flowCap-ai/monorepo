@@ -16,6 +16,7 @@ const BNB_RPC_URL = process.env.BNB_RPC_URL || 'https://bsc-dataseed1.binance.or
 const BICONOMY_BUNDLER_URL = process.env.BICONOMY_BUNDLER_URL || '';
 const BICONOMY_PAYMASTER_URL = process.env.BICONOMY_PAYMASTER_URL || '';
 const SESSION_PRIVATE_KEY = process.env.SESSION_PRIVATE_KEY || '';
+const ENTRYPOINT_ADDRESS = (process.env.ENTRYPOINT_ADDRESS || '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789') as Address;
 
 // Contract addresses
 const PANCAKESWAP_ROUTER_V2 = (process.env.PANCAKESWAP_ROUTER_V2 || '0x10ED43C718714eb63d5aA57B78B54704E256024E') as Address;
@@ -141,7 +142,7 @@ const VTOKEN_ABI = [
   },
 ] as const;
 
-// Token mapping
+// Token mapping (fallback for common tokens)
 const TOKEN_ADDRESSES: Record<string, Address> = {
   BNB: WBNB_ADDRESS,
   WBNB: WBNB_ADDRESS,
@@ -155,18 +156,53 @@ const VTOKEN_ADDRESSES: Record<string, Address> = {
   BNB: VENUS_VBNB,
 };
 
+/**
+ * Resolve token address from symbol or direct address
+ * Can accept either a token symbol or a contract address
+ */
+function resolveTokenAddress(tokenOrAddress: string): Address {
+  // If it's already an address (starts with 0x), return it
+  if (tokenOrAddress.startsWith('0x') && tokenOrAddress.length === 42) {
+    return tokenOrAddress as Address;
+  }
+
+  // Otherwise, look it up in the mapping
+  const address = TOKEN_ADDRESSES[tokenOrAddress.toUpperCase()];
+  if (!address) {
+    throw new Error(`Unknown token: ${tokenOrAddress}. Please provide a valid token address.`);
+  }
+
+  return address;
+}
+
 // Create clients
 const publicClient = createPublicClient({
   chain: bsc,
   transport: http(BNB_RPC_URL),
 });
 
+// Import PoolData type (for integration with getPoolData)
+export interface PoolData {
+  protocol: string;
+  poolId: string;
+  type: string;
+  assets: string[];
+  address: Address;
+  underlyingTokens?: Address[];
+  name: string;
+  isActive: boolean;
+  version?: 'v2' | 'v3';
+  exogenousParams?: any;
+}
+
 export interface SwapParams {
-  tokenIn: string;
-  tokenOut: string;
+  tokenIn: string; // Token symbol or address
+  tokenOut: string; // Token symbol or address
   amountIn: string;
   slippageTolerance: number; // in percentage (e.g., 0.5 for 0.5%)
   recipient: Address;
+  router?: Address; // Optional: specify V2 or V3 router
+  poolAddress?: Address; // Optional: specific pool address for V3
 }
 
 export interface SwapQuote {
@@ -202,15 +238,45 @@ export interface UserOperation {
 }
 
 /**
+ * Create swap parameters from PoolData
+ * Helps OpenClaw create swaps based on pool information
+ */
+export function createSwapFromPool(
+  fromToken: string | Address,
+  pool: PoolData,
+  amountIn: string,
+  slippageTolerance: number,
+  recipient: Address
+): SwapParams {
+  if (!pool.underlyingTokens || pool.underlyingTokens.length === 0) {
+    throw new Error(`Pool ${pool.poolId} does not have underlying token addresses`);
+  }
+
+  // For LP pools, we swap into one of the pool's tokens
+  const toToken = pool.underlyingTokens[0]; // Use first underlying token
+
+  // Determine router based on pool version
+  const PANCAKESWAP_ROUTER_V3 = (process.env.PANCAKESWAP_ROUTER_V3 || '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4') as Address;
+  const router = pool.version === 'v3' ? PANCAKESWAP_ROUTER_V3 : PANCAKESWAP_ROUTER_V2;
+
+  return {
+    tokenIn: fromToken,
+    tokenOut: toToken,
+    amountIn,
+    slippageTolerance,
+    recipient,
+    router,
+    poolAddress: pool.address,
+  };
+}
+
+/**
  * Get swap quote from PancakeSwap
+ * Supports both token symbols and direct addresses
  */
 export async function getSwapQuote(params: SwapParams): Promise<SwapQuote> {
-  const tokenInAddress = TOKEN_ADDRESSES[params.tokenIn.toUpperCase()];
-  const tokenOutAddress = TOKEN_ADDRESSES[params.tokenOut.toUpperCase()];
-
-  if (!tokenInAddress || !tokenOutAddress) {
-    throw new Error(`Unknown token: ${params.tokenIn} or ${params.tokenOut}`);
-  }
+  const tokenInAddress = resolveTokenAddress(params.tokenIn);
+  const tokenOutAddress = resolveTokenAddress(params.tokenOut);
 
   // Get token decimals
   const decimalsIn = params.tokenIn.toUpperCase() === 'BNB' ? 18 : await publicClient.readContract({
@@ -416,7 +482,7 @@ async function sendUserOperation(userOp: UserOperation): Promise<TransactionResu
             paymasterAndData: userOp.paymasterAndData,
             signature: userOp.signature,
           },
-          '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789', // EntryPoint address
+          ENTRYPOINT_ADDRESS, // EntryPoint address
         ],
       }),
     });
@@ -654,6 +720,7 @@ export async function isSwapProfitable(
 
 // Export for use by the agent
 export default {
+  createSwapFromPool,
   getSwapQuote,
   executeSwap,
   supplyToVenus,
