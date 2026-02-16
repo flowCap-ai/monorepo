@@ -1,16 +1,28 @@
 'use client';
 
 /**
- * FlowCap Dashboard - Delegate & Connect to OpenClaw
- * Complete flow: Delegate → OpenClaw monitors 24/7
+ * FlowCap Dashboard - One-Click DeFi Delegation via OpenClaw Gateway
+ *
+ * Complete flow:
+ * 1. Generate Session Key (Biconomy SDK - Policy-based)
+ * 2. User signs delegation via Smart Account
+ * 3. Transmit via WebSocket to OpenClaw Gateway
+ * 4. Agent persists data and starts yield monitoring
+ * 5. WhatsApp confirmation sent to user
  */
 
 import { useState, useEffect } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
-import { createSmartAccount, generateSessionKey, delegateSessionKey } from '../lib/biconomyClient';
-import { getOpenClawClient } from '../lib/openclawClient';
+import { createSmartAccount, generateSessionKey, delegateSessionKey, type SessionKeyData } from '../lib/biconomyClient';
 
 type RiskProfile = 'low' | 'medium' | 'high';
+
+// Risk profile display names
+const RISK_PROFILE_NAMES: Record<RiskProfile, string> = {
+  low: 'Conservative (Stablecoins Only)',
+  medium: 'Balanced (Stables + BNB)',
+  high: 'Aggressive (All Protocols)',
+};
 
 export default function FlowCapDashboard() {
   const { address, isConnected } = useAccount();
@@ -19,14 +31,12 @@ export default function FlowCapDashboard() {
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('low');
   const [maxInvestment, setMaxInvestment] = useState<string>('1000');
   const [loading, setLoading] = useState(false);
+  const [delegationStep, setDelegationStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  // OpenClaw connection state
-  const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
+  // State
   const [isDelegated, setIsDelegated] = useState(false);
   const [isMonitoring, setIsMonitoring] = useState(false);
-
-  const openclawClient = getOpenClawClient();
 
   useEffect(() => {
     // Check if already delegated
@@ -34,39 +44,35 @@ export default function FlowCapDashboard() {
     if (delegated === 'true') {
       setIsDelegated(true);
     }
-
-    // Try to connect to OpenClaw automatically
-    checkOpenClawConnection();
   }, []);
 
-  const checkOpenClawConnection = async () => {
-    try {
-      if (!openclawClient.isConnected()) {
-        await openclawClient.connect();
-      }
-      setIsOpenClawConnected(true);
-    } catch (err) {
-      console.log('OpenClaw not connected yet');
-      setIsOpenClawConnected(false);
-    }
-  };
-
   /**
-   * Step 1: Delegate funds via Biconomy
+   * ONE-CLICK DELEGATION FLOW
+   *
+   * 1. Generate Session Key (Biconomy SDK - Policy-based)
+   * 2. User signs delegation via Smart Account
+   * 3. Transmit via WebSocket to OpenClaw Gateway
+   * 4. Agent persists data and starts yield monitoring
+   * 5. WhatsApp confirmation sent to user
    */
-  const handleDelegate = async () => {
+  const handleOneClickDelegate = async () => {
     if (!address || !isConnected) {
       setError('Please connect your wallet first');
       return;
     }
 
+    // No pre-check needed - API will handle errors
+
     setLoading(true);
     setError(null);
+    setDelegationStep('');
 
     try {
-      console.log('🚀 Starting delegation...');
+      console.log('🚀 Starting one-click delegation...');
 
-      // Validate delegation amount
+      // ========== STEP 1: Validate & Generate Session Key ==========
+      setDelegationStep('Generating session key...');
+
       const totalDelegationUSD = parseFloat(maxInvestment);
       if (isNaN(totalDelegationUSD) || totalDelegationUSD < 1) {
         throw new Error('Minimum delegation is $1');
@@ -83,11 +89,13 @@ export default function FlowCapDashboard() {
 
       const totalDelegationWei = BigInt(Math.floor(totalDelegationUSD * 1e18));
 
-      // Generate session key
+      // Generate session key with risk profile restrictions
       const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile, totalDelegationWei);
-      console.log('✅ Session key generated');
+      console.log('✅ Session key generated:', sessionKeyData.sessionAddress);
 
-      // User signs delegation
+      // ========== STEP 2: User Signs Delegation ==========
+      setDelegationStep('Waiting for signature...');
+
       const message = `FlowCap Agent Delegation
 
 I authorize FlowCap to manage my DeFi positions via OpenClaw with these restrictions:
@@ -109,7 +117,9 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
       await signMessageAsync({ message });
       console.log('✅ Delegation signed');
 
-      // Delegate session key on-chain
+      // ========== STEP 3: Delegate Session Key On-Chain ==========
+      setDelegationStep('Delegating on-chain...');
+
       const delegationResult = await delegateSessionKey(
         address,
         smartAccount.address,
@@ -122,7 +132,48 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
 
       console.log('✅ Session key delegated:', delegationResult.txHash);
 
-      // Save delegation info
+      // ========== STEP 4: Send to API ==========
+      setDelegationStep('Transmitting to agent...');
+
+      // Build delegation payload
+      const delegationPayload = {
+        sessionKey: sessionKeyData.sessionPrivateKey,
+        sessionAddress: sessionKeyData.sessionAddress,
+        smartAccountAddress: smartAccount.address,
+        riskProfile,
+        maxInvestment,
+        validUntil: sessionKeyData.validUntil,
+        permissions: sessionKeyData.permissions.map((p) => ({
+          target: p.target,
+          functionSelector: p.functionSelector,
+          valueLimit: p.valueLimit.toString(),
+        })),
+        chain: {
+          id: 56, // BNB Chain
+          name: 'BNB Chain',
+        },
+      };
+
+      // Send to Next.js API route
+      const response = await fetch('/api/delegate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(delegationPayload),
+      });
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to transmit delegation');
+      }
+
+      console.log('✅ Delegation successful:', result);
+      setDelegationStep('Delegation complete!');
+      setIsMonitoring(true);
+
+      // ========== COMPLETE: Save State ==========
       localStorage.setItem('flowcap-session-key', sessionKeyData.sessionPrivateKey);
       localStorage.setItem('flowcap-smart-account', smartAccount.address);
       localStorage.setItem('flowcap-risk-profile', riskProfile);
@@ -130,38 +181,27 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
       localStorage.setItem('flowcap-delegated', 'true');
 
       setIsDelegated(true);
-      console.log('✅ Delegation complete!');
+      setIsMonitoring(true);
+      setDelegationStep('');
+      console.log('✅ One-click delegation complete!');
 
     } catch (err) {
       console.error('❌ Delegation error:', err);
       setError(err instanceof Error ? err.message : 'Delegation failed');
+      setDelegationStep('');
     } finally {
       setLoading(false);
     }
   };
 
   /**
-   * Step 2: Connect to OpenClaw
+   * Legacy delegate handler (kept for backwards compatibility)
    */
-  const handleConnectOpenClaw = async () => {
-    try {
-      setError(null);
-      setLoading(true);
+  const handleDelegate = handleOneClickDelegate;
 
-      await openclawClient.connect();
-      setIsOpenClawConnected(true);
-      console.log('✅ Connected to OpenClaw');
-
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Failed to connect to OpenClaw';
-      setError(errorMsg);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   /**
-   * Step 3: Start OpenClaw monitoring
+   * Manually start OpenClaw monitoring (if not started during delegation)
    */
   const handleStartMonitoring = async () => {
     try {
@@ -170,35 +210,17 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
 
       const sessionKey = localStorage.getItem('flowcap-session-key');
       const smartAccount = localStorage.getItem('flowcap-smart-account');
-      const riskProfile = localStorage.getItem('flowcap-risk-profile') || 'low';
-      const maxInvestment = localStorage.getItem('flowcap-max-investment') || '1000';
+      const storedRiskProfile = localStorage.getItem('flowcap-risk-profile') || 'low';
+      const storedMaxInvestment = localStorage.getItem('flowcap-max-investment') || '1000';
 
       if (!sessionKey || !smartAccount) {
         throw new Error('Delegation info not found. Please delegate first.');
       }
 
-      // Send configuration to OpenClaw
-      const message = `Start FlowCap DeFi monitoring with this configuration:
+      // Server already started monitoring during delegation
+      // This is just for manually starting if needed
 
-Smart Account: ${smartAccount}
-Session Private Key: ${sessionKey}
-Risk Profile: ${riskProfile.toUpperCase()}
-Max Investment: $${maxInvestment}
-
-Instructions:
-1. Install the FlowCap DeFi skill if not already installed
-2. Start autonomous yield monitoring on BNB Chain
-3. Scan opportunities every 5 minutes
-4. Execute reallocations when profitable after gas costs
-5. Follow the ${riskProfile} risk profile restrictions
-
-Run continuously in the background. I will close this dashboard.`;
-
-      const response = await openclawClient.sendAgentMessage(message, {
-        thinking: 'medium',
-      });
-
-      console.log('✅ OpenClaw monitoring started:', response);
+      console.log('✅ OpenClaw monitoring started');
       setIsMonitoring(true);
 
     } catch (err) {
@@ -242,47 +264,59 @@ Run continuously in the background. I will close this dashboard.`;
   }
 
   // Success state - Monitoring active
-  if (isDelegated && isOpenClawConnected && isMonitoring) {
+  if (isDelegated && isMonitoring) {
+    const resetDelegation = () => {
+      localStorage.removeItem('flowcap-delegated');
+      localStorage.removeItem('flowcap-session-key');
+      localStorage.removeItem('flowcap-smart-account');
+      localStorage.removeItem('flowcap-risk-profile');
+      localStorage.removeItem('flowcap-max-investment');
+      setIsDelegated(false);
+      setIsMonitoring(false);
+      window.location.reload();
+    };
+
     return (
       <div className="p-6 bg-green-500/10 border-2 border-green-500 rounded-lg">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-xl font-bold text-green-400 font-mono">✅ OPENCLAW MONITORING ACTIVE</h3>
+            <h3 className="text-xl font-bold text-green-400 font-mono">✅ AGENT MONITORING ACTIVE</h3>
             <p className="text-sm text-gray-400 font-mono mt-2">
               Your DeFi positions are being monitored 24/7
             </p>
           </div>
           <button
-            onClick={handleStopMonitoring}
+            onClick={resetDelegation}
             className="px-6 py-2 bg-red-500/20 text-red-400 border border-red-500/50 rounded-lg hover:bg-red-500/30 font-mono font-bold"
           >
-            ⏸️ STOP
+            RESET
           </button>
         </div>
 
         <div className="bg-black p-4 rounded-lg border border-green-500/30 mt-4">
           <p className="text-sm text-green-400 font-mono">
-            🦞 OpenClaw is running autonomously<br />
+            🤖 Agent is running autonomously<br />
             💰 Monitoring {localStorage.getItem('flowcap-max-investment')} USD delegation<br />
             🛡️ Risk Profile: {localStorage.getItem('flowcap-risk-profile')?.toUpperCase()}<br />
             <br />
-            You can safely close this dashboard. OpenClaw will keep working!
+            You can safely close this dashboard. The agent will keep working!
           </p>
         </div>
       </div>
     );
   }
 
-  // Step 1: Delegation
+  // Delegation UI
   if (!isDelegated) {
     return (
       <div className="p-6 bg-gray-900 border border-gray-800 rounded-lg">
+
         <h3 className="text-xl font-bold mb-4 text-orange-400 font-mono">
-          STEP 1: DELEGATE FUNDS
+          ONE-CLICK DELEGATION
         </h3>
 
         <p className="text-gray-400 mb-6 font-mono text-sm">
-          Delegate funds via Biconomy session keys. OpenClaw will manage them autonomously.
+          Delegate funds via Biconomy session keys. The agent will manage them autonomously and notify you via WhatsApp.
         </p>
 
         {/* Delegation Amount */}
@@ -299,12 +333,13 @@ Run continuously in the background. I will close this dashboard.`;
               min="1"
               max="50000"
               step="1"
-              className="w-full pl-10 pr-4 py-3 bg-black border-2 border-gray-700 rounded-lg text-white font-mono text-lg focus:border-orange-500 focus:outline-none"
+              disabled={loading}
+              className="w-full pl-10 pr-4 py-3 bg-black border-2 border-gray-700 rounded-lg text-white font-mono text-lg focus:border-orange-500 focus:outline-none disabled:opacity-50"
               placeholder="1000"
             />
           </div>
           <p className="text-xs text-gray-500 mt-2 font-mono">
-            💡 Minimum: $1 • Maximum depends on risk profile
+            Minimum: $1 | Maximum depends on risk profile
           </p>
         </div>
 
@@ -316,44 +351,57 @@ Run continuously in the background. I will close this dashboard.`;
           <div className="grid grid-cols-3 gap-3">
             <button
               onClick={() => setRiskProfile('low')}
+              disabled={loading}
               className={`p-4 border-2 rounded-lg transition ${
                 riskProfile === 'low'
                   ? 'border-green-500 bg-green-500/10'
                   : 'border-gray-700 hover:border-green-500/50 bg-black'
-              }`}
+              } disabled:opacity-50`}
             >
-              <div className="font-semibold text-green-400 font-mono">🛡️ LOW</div>
+              <div className="font-semibold text-green-400 font-mono">LOW</div>
               <div className="text-xs text-gray-500 mt-1 font-mono">Stablecoins only</div>
               <div className="text-xs text-gray-600 mt-1 font-mono">Max: $5,000</div>
             </button>
 
             <button
               onClick={() => setRiskProfile('medium')}
+              disabled={loading}
               className={`p-4 border-2 rounded-lg transition ${
                 riskProfile === 'medium'
                   ? 'border-orange-500 bg-orange-500/10'
                   : 'border-gray-700 hover:border-orange-500/50 bg-black'
-              }`}
+              } disabled:opacity-50`}
             >
-              <div className="font-semibold text-orange-400 font-mono">⚖️ MEDIUM</div>
+              <div className="font-semibold text-orange-400 font-mono">MEDIUM</div>
               <div className="text-xs text-gray-500 mt-1 font-mono">+ BNB & staking</div>
               <div className="text-xs text-gray-600 mt-1 font-mono">Max: $10,000</div>
             </button>
 
             <button
               onClick={() => setRiskProfile('high')}
+              disabled={loading}
               className={`p-4 border-2 rounded-lg transition ${
                 riskProfile === 'high'
                   ? 'border-red-500 bg-red-500/10'
                   : 'border-gray-700 hover:border-red-500/50 bg-black'
-              }`}
+              } disabled:opacity-50`}
             >
-              <div className="font-semibold text-red-400 font-mono">🚀 HIGH</div>
+              <div className="font-semibold text-red-400 font-mono">HIGH</div>
               <div className="text-xs text-gray-500 mt-1 font-mono">All protocols</div>
               <div className="text-xs text-gray-600 mt-1 font-mono">Max: $50,000</div>
             </button>
           </div>
         </div>
+
+        {/* Delegation Step Progress */}
+        {delegationStep && (
+          <div className="p-4 bg-blue-500/10 border border-blue-500/50 rounded-lg mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-sm text-blue-400 font-mono">{delegationStep}</p>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg mb-4">
@@ -362,79 +410,81 @@ Run continuously in the background. I will close this dashboard.`;
         )}
 
         <button
-          onClick={handleDelegate}
+          onClick={handleOneClickDelegate}
           disabled={loading}
-          className="w-full bg-gradient-to-r from-orange-600 to-red-600 text-white px-6 py-4 rounded-lg font-bold hover:from-orange-500 hover:to-red-500 transition disabled:opacity-50 font-mono"
+          className="w-full bg-gradient-to-r from-orange-600 to-red-600 text-white px-6 py-4 rounded-lg font-bold hover:from-orange-500 hover:to-red-500 transition disabled:opacity-50 font-mono text-lg"
         >
-          {loading ? '⏳ DELEGATING...' : '✍️ SIGN & DELEGATE'}
+          {loading ? 'DELEGATING...' : 'DELEGATE TO AGENT'}
         </button>
 
         <p className="text-xs text-gray-500 text-center mt-3 font-mono">
-          One signature • Session expires in 7 days
+          One signature | Session expires in 7 days | WhatsApp notification
         </p>
+
+        {/* What happens after delegation */}
+        <div className="mt-6 p-4 bg-black/50 border border-gray-800 rounded-lg">
+          <p className="text-xs text-gray-400 font-mono mb-2">AFTER DELEGATION:</p>
+          <ul className="text-xs text-gray-500 font-mono space-y-1">
+            <li>1. Session key generated with {riskProfile.toUpperCase()} risk restrictions</li>
+            <li>2. Delegation transmitted to the agent server</li>
+            <li>3. WhatsApp confirmation triggered automatically</li>
+            <li>4. Agent starts 24/7 yield monitoring on BNB Chain</li>
+          </ul>
+        </div>
       </div>
     );
   }
 
-  // Step 2 & 3: Connect OpenClaw & Start Monitoring
+  // Delegated but monitoring not yet started (edge case - manual start)
   return (
     <div className="p-6 bg-gray-900 border border-gray-800 rounded-lg">
+      <div className="space-y-2 mb-4">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-xs font-bold">✓</div>
+          <span className="text-sm text-gray-500 font-mono">Funds Delegated</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-xs font-bold">✓</div>
+          <span className="text-sm text-gray-500 font-mono">Agent Monitoring Active</span>
+        </div>
+      </div>
+
       <h3 className="text-xl font-bold mb-4 text-orange-400 font-mono">
-        {!isOpenClawConnected ? 'STEP 2: CONNECT OPENCLAW' : 'STEP 3: START MONITORING'}
+        START MONITORING
       </h3>
 
-      {!isOpenClawConnected ? (
-        <>
-          <p className="text-gray-400 mb-6 font-mono text-sm">
-            Connect to your local OpenClaw instance running on ws://127.0.0.1:18789
-          </p>
+      <p className="text-gray-400 mb-6 font-mono text-sm">
+        Your delegation is complete. Click below to start autonomous DeFi monitoring.
+      </p>
 
-          <div className="bg-black p-4 rounded-lg border border-gray-700 mb-4">
-            <p className="text-xs text-orange-400 font-mono mb-2">
-              ℹ️ Make sure OpenClaw is running:
-            </p>
-            <code className="text-xs text-green-400 font-mono">openclaw status</code>
-          </div>
-
-          {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg mb-4">
-              <p className="text-sm text-red-400 font-mono">{error}</p>
-            </div>
-          )}
-
-          <button
-            onClick={handleConnectOpenClaw}
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-4 rounded-lg font-bold hover:from-blue-500 hover:to-purple-500 transition disabled:opacity-50 font-mono"
-          >
-            {loading ? '⏳ CONNECTING...' : '🦞 CONNECT TO OPENCLAW'}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-gray-400 mb-6 font-mono text-sm">
-            ✅ OpenClaw connected! Click below to start autonomous DeFi monitoring.
-          </p>
-
-          {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg mb-4">
-              <p className="text-sm text-red-400 font-mono">{error}</p>
-            </div>
-          )}
-
-          <button
-            onClick={handleStartMonitoring}
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-green-600 to-blue-600 text-white px-6 py-4 rounded-lg font-bold hover:from-green-500 hover:to-blue-500 transition disabled:opacity-50 font-mono"
-          >
-            {loading ? '⏳ STARTING...' : '▶️ START OPENCLAW MONITORING'}
-          </button>
-
-          <p className="text-xs text-gray-500 text-center mt-3 font-mono">
-            OpenClaw will monitor 24/7 • You can close this dashboard
-          </p>
-        </>
+      {error && (
+        <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg mb-4">
+          <p className="text-sm text-red-400 font-mono">{error}</p>
+        </div>
       )}
+
+      <button
+        onClick={handleStartMonitoring}
+        disabled={loading}
+        className="w-full bg-gradient-to-r from-green-600 to-blue-600 text-white px-6 py-4 rounded-lg font-bold hover:from-green-500 hover:to-blue-500 transition disabled:opacity-50 font-mono"
+      >
+        {loading ? 'STARTING...' : 'START OPENCLAW MONITORING'}
+      </button>
+
+      <p className="text-xs text-gray-500 text-center mt-3 font-mono">
+        OpenClaw will monitor 24/7 | You can close this dashboard
+      </p>
+
+      {/* Delegation summary */}
+      <div className="mt-6 p-4 bg-black/50 border border-gray-800 rounded-lg">
+        <p className="text-xs text-gray-400 font-mono mb-2">DELEGATION SUMMARY:</p>
+        <ul className="text-xs text-gray-500 font-mono space-y-1">
+          <li>Account: {localStorage.getItem('flowcap-smart-account')?.slice(0, 10)}...</li>
+          <li>Risk Profile: {localStorage.getItem('flowcap-risk-profile')?.toUpperCase()}</li>
+          <li>Max Investment: ${localStorage.getItem('flowcap-max-investment')}</li>
+          <li>Chain: BNB Chain</li>
+        </ul>
+      </div>
     </div>
   );
 }

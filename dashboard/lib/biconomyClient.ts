@@ -364,12 +364,6 @@ export async function delegateSessionKey(
       ],
     });
 
-    // Create MEE Client with API key for gas sponsorship
-    const meeClient = await createMeeClient({
-      account,
-      apiKey: meeApiKey,
-    });
-
     console.log('📝 Enabling session key on smart account...');
 
     // Build session key module data
@@ -391,19 +385,42 @@ export async function delegateSessionKey(
       value: BigInt(0),
     };
 
-    // Send the transaction with gas sponsorship via MEE
-    const userOpResponse = await meeClient.sendTransaction({
-      chainId: bsc.id,
-      calls: [{
-        to: enableSessionTx.to,
-        data: enableSessionTx.data,
-        value: enableSessionTx.value,
-      }],
-      sponsorship: { mode: 'auto' }, // Auto gas sponsorship
+    // Create MEE Client for gas-sponsored transactions
+    const meeClient = await createMeeClient({
+      account,
+      apiKey: meeApiKey,
     });
 
-    // Wait for transaction confirmation
-    const transactionHash = userOpResponse.hash;
+    // Build instruction for the transaction
+    const instruction = account.build({
+      type: 'default',
+      data: {
+        calls: [{
+          to: enableSessionTx.to,
+          data: enableSessionTx.data,
+          value: enableSessionTx.value,
+        }],
+        chainId: bsc.id,
+      },
+    });
+
+    // Get quote for the transaction (with sponsorship)
+    const quote = await meeClient.getQuote({
+      instructions: [instruction],
+      feeToken: {
+        address: '0x55d398326f99059fF775485246999027B3197955' as Address, // USDT on BSC
+        chainId: bsc.id,
+      },
+    });
+
+    // Execute the quote
+    const { hash } = await meeClient.executeQuote({ quote });
+
+    // Wait for transaction receipt
+    const receipt = await meeClient.waitForSupertransactionReceipt({ hash });
+
+    // Get transaction hash from receipt
+    const transactionHash = hash;
 
     console.log('✅ Session key delegated on-chain!');
     console.log('Transaction:', `https://bscscan.com/tx/${transactionHash}`);
@@ -529,23 +546,40 @@ export async function submitUserOperation(
       data: transaction.data.slice(0, 10) + '...',
     });
 
-    // Send transaction with auto gas sponsorship
-    const result = await meeClient.sendTransaction({
-      chainId: bsc.id,
-      calls: [{
-        to: transaction.to,
-        data: transaction.data,
-        value: transaction.value || BigInt(0),
-      }],
-      sponsorship: { mode: 'auto' },
+    // Build instruction for the transaction
+    const instruction = account.build({
+      type: 'default',
+      data: {
+        calls: [{
+          to: transaction.to,
+          data: transaction.data,
+          value: transaction.value || BigInt(0),
+        }],
+        chainId: bsc.id,
+      },
     });
 
+    // Get quote for the transaction
+    const quote = await meeClient.getQuote({
+      instructions: [instruction],
+      feeToken: {
+        address: '0x55d398326f99059fF775485246999027B3197955' as Address, // USDT on BSC
+        chainId: bsc.id,
+      },
+    });
+
+    // Execute the quote
+    const { hash } = await meeClient.executeQuote({ quote });
+
+    // Wait for receipt
+    await meeClient.waitForSupertransactionReceipt({ hash });
+
     console.log('✅ UserOp executed successfully!');
-    console.log('Transaction:', `https://bscscan.com/tx/${result.hash}`);
+    console.log('Transaction:', `https://bscscan.com/tx/${hash}`);
 
     return {
-      userOpHash: result.hash,
-      txHash: result.hash,
+      userOpHash: hash,
+      txHash: hash,
       success: true,
     };
   } catch (error: any) {

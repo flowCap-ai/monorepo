@@ -20,6 +20,12 @@ export interface PoolInfo {
 
   name: string;
   isActive: boolean;
+
+  // Pool version (for PancakeSwap V2 vs V3)
+  version?: 'v2' | 'v3';
+
+  // Exogenous parameters (only for DEX pools like PancakeSwap)
+  exogenousParams?: any;
 }
 
 /**

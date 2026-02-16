@@ -948,7 +948,7 @@ export async function executeReallocation(params: ReallocationParams): Promise<R
         case 'withdraw':
           if (step.protocol === 'Venus' && step.token) {
             // Extract token symbol from address (would need a reverse lookup or pass symbol)
-            const tokenSymbol = getTokenSymbol(step.token);
+            const tokenSymbol = getTokenSymbol(step.token as Address);
             result = await withdrawFromVenus(
               tokenSymbol,
               step.amount!,
@@ -984,7 +984,7 @@ export async function executeReallocation(params: ReallocationParams): Promise<R
 
         case 'supply':
           if (step.protocol === 'Venus' && step.token) {
-            const tokenSymbol = getTokenSymbol(step.token);
+            const tokenSymbol = getTokenSymbol(step.token as Address);
             result = await supplyToVenus(
               tokenSymbol,
               step.amount!,

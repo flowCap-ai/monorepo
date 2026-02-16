@@ -9,10 +9,10 @@ import { parse as parseYaml } from 'yaml';
 import { join } from 'path';
 
 // Import skills
-import * as getPoolData from './skills/getPoolData.js';
-import * as analyzePool from './skills/analyzePool.js';
-import * as execSwap from './skills/execSwap.js';
-import * as getPools from './skills/getPools.js';
+import * as getPoolData from './skills/getPoolData';
+import * as analyzePool from './skills/analyzePool';
+import * as execSwap from './skills/execSwap';
+import * as getPools from './skills/getPools';
 
 // Types
 interface AgentConfig {
