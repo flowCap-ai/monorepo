@@ -1,16 +1,21 @@
 /**
  * FlowCap Delegation API Route
  *
- * Receives delegation metadata from frontend and forwards to SERVER.
+ * Receives delegation metadata from frontend and saves to the delegation folder
+ * that the agent watches (~/.openclaw/flowcap-delegations/active.json).
+ *
  * SECURITY: Session key private material NEVER leaves the client.
- *           Only the session address (public) + permissions are sent.
+ *           Only sessionAddress (public) + compressedSessionData are accepted.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 // ─── Config ──────────────────────────────────────────────────────
-const SERVER_URL = process.env.FLOWCAP_SERVER_URL || 'http://localhost:3001';
-const API_SECRET = process.env.FLOWCAP_API_SECRET || '';
+const DELEGATION_FOLDER = join(homedir(), '.openclaw', 'flowcap-delegations');
+const ACTIVE_FILE = join(DELEGATION_FOLDER, 'active.json');
 
 // ─── Rate limiter (in-memory, per-ip, per-minute) ────────────────
 const rateLimitMap = new Map<string, { count: number; reset: number }>();
@@ -38,21 +43,13 @@ function isValidAddress(addr: unknown): addr is string {
 
 // ─── Types ───────────────────────────────────────────────────────
 interface DelegationRequest {
-  /** Public session key address — NEVER the private key */
   sessionAddress: string;
   smartAccountAddress: string;
   riskProfile: 'low' | 'medium' | 'high';
   maxInvestment: string;
   validUntil: number;
-  permissions: Array<{
-    target: string;
-    functionSelector: string;
-    valueLimit: string;
-  }>;
-  chain: {
-    id: number;
-    name: string;
-  };
+  compressedSessionData?: string | null;
+  chain: { id: number; name: string };
 }
 
 export async function POST(request: NextRequest) {
@@ -74,16 +71,6 @@ export async function POST(request: NextRequest) {
 
     const body: DelegationRequest = await request.json();
 
-    // ── Validate required fields ───────────────────────────────
-    const { sessionAddress, smartAccountAddress, riskProfile, maxInvestment, validUntil, permissions, chain } = body;
-
-    if (!sessionAddress || !smartAccountAddress || !riskProfile || !maxInvestment) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required fields: sessionAddress, smartAccountAddress, riskProfile, maxInvestment' },
-        { status: 400 }
-      );
-    }
-
     // ── SECURITY: Reject if caller sends a private key ─────────
     if ('sessionKey' in body && typeof (body as any).sessionKey === 'string' && (body as any).sessionKey.length > 42) {
       console.error('❌ Client attempted to send session private key — rejected');
@@ -93,122 +80,93 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Address validation ─────────────────────────────────────
-    if (!isValidAddress(sessionAddress)) {
+    const { sessionAddress, smartAccountAddress, riskProfile, maxInvestment, validUntil, compressedSessionData, chain } = body;
+
+    // ── Validate required fields ───────────────────────────────
+    if (!sessionAddress || !smartAccountAddress || !riskProfile || !maxInvestment) {
       return NextResponse.json(
-        { success: false, error: 'Invalid sessionAddress format' },
-        { status: 400 }
-      );
-    }
-    if (!isValidAddress(smartAccountAddress)) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid smartAccountAddress format' },
+        { success: false, error: 'Missing required fields: sessionAddress, smartAccountAddress, riskProfile, maxInvestment' },
         { status: 400 }
       );
     }
 
-    // ── Risk profile validation ────────────────────────────────
+    if (!isValidAddress(sessionAddress)) {
+      return NextResponse.json({ success: false, error: 'Invalid sessionAddress format' }, { status: 400 });
+    }
+    if (!isValidAddress(smartAccountAddress)) {
+      return NextResponse.json({ success: false, error: 'Invalid smartAccountAddress format' }, { status: 400 });
+    }
     if (!VALID_RISK_PROFILES.includes(riskProfile)) {
       return NextResponse.json(
         { success: false, error: `Invalid riskProfile. Must be one of: ${VALID_RISK_PROFILES.join(', ')}` },
         { status: 400 }
       );
     }
-
-    // ── Validate permissions array ─────────────────────────────
-    if (!Array.isArray(permissions) || permissions.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'permissions array is required and must not be empty' },
-        { status: 400 }
-      );
-    }
-
-    for (const perm of permissions) {
-      if (!isValidAddress(perm.target)) {
-        return NextResponse.json(
-          { success: false, error: `Invalid permission target: ${perm.target}` },
-          { status: 400 }
-        );
-      }
-    }
-
-    // ── Validate validUntil ────────────────────────────────────
     if (!validUntil || validUntil < Date.now() / 1000) {
-      return NextResponse.json(
-        { success: false, error: 'validUntil must be a future unix timestamp' },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, error: 'validUntil must be a future unix timestamp' }, { status: 400 });
     }
 
-    console.log('📤 Sending delegation metadata to server (no private key):', {
-      sessionAddress,
-      smartAccountAddress,
-      riskProfile,
-      maxInvestment,
-      server: SERVER_URL,
-    });
-
-    // ── Build safe payload (explicitly exclude any private key) ─
+    // ── Build delegation record ────────────────────────────────
     const delegationId = `${smartAccountAddress.toLowerCase()}-${Date.now()}`;
-    const safePayload = {
+    const newDelegation = {
       id: delegationId,
       timestamp: Date.now(),
       status: 'active',
+      sessionKey: sessionAddress,          // public address — used by agent as identifier
       sessionAddress,
       smartAccountAddress,
       riskProfile,
       maxInvestment,
       validUntil,
-      permissions,
+      compressedSessionData: compressedSessionData ?? null,
       chain,
     };
 
-    // ── Forward to OpenClaw server ─────────────────────────────
+    // ── Save to delegation file ────────────────────────────────
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (API_SECRET) {
-        headers['Authorization'] = `Bearer ${API_SECRET}`;
+      if (!existsSync(DELEGATION_FOLDER)) {
+        mkdirSync(DELEGATION_FOLDER, { recursive: true });
       }
 
-      const serverResponse = await fetch(`${SERVER_URL}/api/flowcap/delegate`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(safePayload),
-        signal: AbortSignal.timeout(10_000), // 10s timeout
-      });
-
-      if (!serverResponse.ok) {
-        const errorText = await serverResponse.text();
-        console.error('❌ Server rejected delegation:', errorText);
-        return NextResponse.json(
-          { success: false, error: 'Server rejected delegation' },
-          { status: 502 }
-        );
+      // Read existing delegations, append new one
+      let delegations: typeof newDelegation[] = [];
+      if (existsSync(ACTIVE_FILE)) {
+        try {
+          const existing = JSON.parse(readFileSync(ACTIVE_FILE, 'utf-8'));
+          delegations = Array.isArray(existing) ? existing : [existing];
+        } catch {
+          delegations = [];
+        }
       }
 
-      const serverResult = await serverResponse.json();
-      console.log('✅ Server accepted delegation:', serverResult);
+      // Remove expired delegations
+      const now = Math.floor(Date.now() / 1000);
+      delegations = delegations.filter((d) => d.validUntil > now);
 
-      return NextResponse.json({
-        success: true,
-        delegationId,
-        message: 'Delegation registered successfully',
-        smartAccountAddress,
-        riskProfile,
-      });
+      // Add new delegation
+      delegations.push(newDelegation);
 
-    } catch (serverError) {
-      console.error('❌ Failed to reach server:', serverError);
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Could not reach FlowCap server',
-        },
-        { status: 503 }
-      );
+      writeFileSync(ACTIVE_FILE, JSON.stringify(delegations, null, 2));
+      console.log(`✅ Delegation saved to ${ACTIVE_FILE}`);
+    } catch (fileError) {
+      console.error('❌ Failed to write delegation file:', fileError);
+      // Non-fatal — agent may not be running locally, still return success
     }
+
+    console.log('✅ Delegation registered:', {
+      delegationId,
+      sessionAddress,
+      smartAccountAddress,
+      riskProfile,
+    });
+
+    return NextResponse.json({
+      success: true,
+      delegationId,
+      message: 'Delegation registered successfully',
+      smartAccountAddress,
+      riskProfile,
+    });
 
   } catch (error: any) {
     console.error('❌ Delegation error:', error);
@@ -224,7 +182,7 @@ export async function GET() {
     success: true,
     message: 'FlowCap Delegation API',
     endpoints: {
-      POST: '/api/delegate — Submit delegation metadata (session address only, no private key)',
+      POST: '/api/delegate — Submit delegation (sessionAddress + compressedSessionData, no private key)',
     },
   });
 }

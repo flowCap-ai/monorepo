@@ -63,7 +63,7 @@ export default function Home() {
       {/* ─── HEADER ─── */}
       <header className="sticky top-0 z-50 border-b border-[var(--border)] bg-bg/80 backdrop-blur-xl">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <FlowCapWordmark size={26} />
+          <FlowCapWordmark size={44} />
           <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface border border-[var(--border)] text-[11px] text-zinc-500">
               <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse-dot" />

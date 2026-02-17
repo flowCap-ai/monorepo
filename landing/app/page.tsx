@@ -360,7 +360,7 @@ export default function LandingPage() {
         className="fixed top-0 left-0 right-0 z-50 glass-strong"
       >
         <div className="max-w-6xl mx-auto px-6 py-3.5 flex items-center justify-between">
-          <FlowCapWordmark size={28} />
+          <FlowCapWordmark size={44} />
           <div className="hidden md:flex items-center gap-8 text-[13px] text-zinc-500">
             <a href="#features" className="hover:text-zinc-200 transition-colors">Features</a>
             <a href="#how-it-works" className="hover:text-zinc-200 transition-colors">How it works</a>
@@ -764,7 +764,7 @@ export default function LandingPage() {
           <div className="flex items-center gap-3">
             <FlowCapLogo size={24} />
             <span className="text-xs text-zinc-600">
-              FlowCap by <span className="text-zinc-400">HashFox Labs</span>
+              CustoFi by <span className="text-zinc-400">HashFox Labs</span>
             </span>
           </div>
           <div className="flex items-center gap-6 text-xs text-zinc-600">

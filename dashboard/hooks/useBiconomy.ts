@@ -78,18 +78,9 @@ export function useBiconomy(): BiconomyHookReturn {
       }
 
       try {
-        const { submitUserOperation } = await import('@/lib/biconomyClient');
-        // submitUserOperation expects (transaction, smartAccountAddress, sessionPrivateKey)
-        // Session private key should come from encrypted storage, not stored in the hook
-        const sessionPrivateKey = localStorage.getItem('flowcap-session-key') as `0x${string}` | null;
-        if (!sessionPrivateKey) throw new Error('No session key found');
-        const result = await submitUserOperation(
-          { to: target, data: callData, value: value ?? BigInt(0) },
-          smartAccount.address,
-          sessionPrivateKey
-        );
-
-        return result?.userOpHash ?? null;
+        // UserOp execution is handled by the agent via compressedSessionData.
+        // Direct submitUserOperation is not available in browser context.
+        throw new Error('UserOp execution must be performed by the CustoFi agent, not the browser.');
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'UserOp submission failed';
         setSmartAccount((s) => ({ ...s, error: msg }));

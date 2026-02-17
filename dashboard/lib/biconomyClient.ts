@@ -1,44 +1,49 @@
 /**
- * Biconomy Client - Browser Implementation
- * Handles smart account creation and session key delegation
+ * FlowCap — Biconomy AbstractJS + MEE API (Smart Sessions)
+ *
+ * Stack:
+ *  - @biconomy/abstractjs     → toMultichainNexusAccount, createMeeClient, meeSessionActions
+ *  - Smart Sessions module    → toSmartSessionsModule, grantPermissionTypedDataSign
+ *  - MEE API key              → from NEXT_PUBLIC_BICONOMY_MEE_API_KEY
+ *  - Gas                      → handled by MEE (no Pimlico, no custom bundler)
+ *
+ * Delegation flow:
+ *  1. createSmartAccount()           → compute Nexus SA address (no tx)
+ *  2. generateSessionKey()           → random session keypair (stays client-side)
+ *  3. delegateSessionKey()           → typed-data signature (no gas from user)
+ *     → installs SmartSessions module if needed via MEE
+ *     → grants permission with time-bounded sudo policies
+ *     → returns sessionDetails JSON for the agent
  */
 
 import {
   type Address,
   type Hex,
-  createPublicClient,
-  http,
   createWalletClient,
   custom,
-  encodeFunctionData,
-  encodeAbiParameters,
-  parseAbiParameters,
-  keccak256,
-  toHex,
-  concat,
+  http,
+  toFunctionSelector,
 } from 'viem';
 import { bsc } from 'viem/chains';
-import { privateKeyToAccount } from 'viem/accounts';
+import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 import {
-  createMeeClient,
   toMultichainNexusAccount,
+  createMeeClient,
+  meeSessionActions,
   getMEEVersion,
-  MEEVersion
+  MEEVersion,
+  getSudoPolicy,
 } from '@biconomy/abstractjs';
+import { getTimeFramePolicy } from '@rhinestone/module-sdk';
 
-// Session key permission structure
-export interface SessionKeyPermission {
-  target: Address;
-  functionSelector: Hex;
-  valueLimit: bigint;
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface SessionKeyData {
   sessionAddress: Address;
-  sessionPrivateKey: Hex;
-  validUntil: number; // Unix timestamp
-  validAfter: number; // Unix timestamp
-  permissions: SessionKeyPermission[];
+  sessionPrivateKey: Hex;   // stays LOCAL ONLY — never sent to server
+  validUntil: number;
+  validAfter: number;
+  riskProfile: 'low' | 'medium' | 'high';
 }
 
 export interface SmartAccount {
@@ -46,692 +51,240 @@ export interface SmartAccount {
   owner: Address;
 }
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const BSC_RPC = process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb';
+const MEE_API_KEY = process.env.NEXT_PUBLIC_BICONOMY_MEE_API_KEY || '';
+
+// BSC MEE version — V2_1_0 is stable for single-chain
+const BSC_MEE_VERSION = getMEEVersion(MEEVersion.V2_1_0);
+
+// BNB Chain addresses
+const ADDR = {
+  PANCAKE_V2:  '0x10ED43C718714eb63d5aA57B78B54704E256024E' as Address,
+  PANCAKE_V3:  '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4' as Address,
+  VENUS_VUSDT: '0xfD5840Cd36d94D7229439859C0112a4185BC0255' as Address,
+  VENUS_VUSDC: '0xecA88125a5ADbe82614ffC12D0DB554E2e2867C8' as Address,
+  VENUS_VBUSD: '0x95c78222B3D6e262426483D42CfA53685A67Ab9D' as Address,
+  VENUS_VBNB:  '0xA07c5b74C9B40447a954e1466938b865b6BBea36' as Address,
+  VENUS_VETH:  '0xf508fCD89b8bd15579dc79A6827cB4686A3592c8' as Address,
+  VENUS_VBTCB: '0x882C173bC7Ff3b7786CA16dfeD3DFFfb9Ee7847B' as Address,
+  USDT:        '0x55d398326f99059fF775485246999027B3197955' as Address,
+  USDC:        '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' as Address,
+  BUSD:        '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56' as Address,
+  WBNB:        '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c' as Address,
+  ETH:         '0x2170Ed0880ac9A755fd29B2688956BD959F933F8' as Address,
+  BTCB:        '0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c' as Address,
+  CAKE:        '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82' as Address,
+} as const;
+
+// Venus ABI selectors
+const SELECTOR = {
+  MINT:         toFunctionSelector('mint(uint256)'),
+  MINT_BNB:     toFunctionSelector('mint()'),
+  REDEEM:       toFunctionSelector('redeem(uint256)'),
+  APPROVE:      toFunctionSelector('approve(address,uint256)'),
+  SWAP_TKN_TKN: toFunctionSelector('swapExactTokensForTokens(uint256,uint256,address[],address,uint256)'),
+  SWAP_ETH_TKN: toFunctionSelector('swapExactETHForTokens(uint256,address[],address,uint256)'),
+  SWAP_TKN_ETH: toFunctionSelector('swapExactTokensForETH(uint256,uint256,address[],address,uint256)'),
+} as const;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 /**
- * Create/Get Biconomy Smart Account for a user
- * Uses Biconomy SDK to get the counterfactual smart account address
+ * Build MEE session actions per risk profile.
+ * Each action gets a sudo policy (full access) + time-frame policy (7-day window).
+ */
+function buildActions(
+  riskProfile: 'low' | 'medium' | 'high',
+  validAfter: number,
+  validUntil: number,
+): { chainId: number; actionTarget: Address; actionTargetSelector: Hex; actionPolicies: any[] }[] {
+  const sudo = getSudoPolicy();
+  const timeFrame = getTimeFramePolicy({ validAfter, validUntil });
+
+  const entry = (actionTarget: Address, actionTargetSelector: Hex) => ({
+    chainId: bsc.id,
+    actionTarget,
+    actionTargetSelector,
+    actionPolicies: [sudo, timeFrame],
+  });
+
+  const actions = [
+    // LOW — Venus stablecoins
+    entry(ADDR.VENUS_VUSDT, SELECTOR.MINT),
+    entry(ADDR.VENUS_VUSDT, SELECTOR.REDEEM),
+    entry(ADDR.VENUS_VUSDC, SELECTOR.MINT),
+    entry(ADDR.VENUS_VUSDC, SELECTOR.REDEEM),
+    entry(ADDR.VENUS_VBUSD, SELECTOR.MINT),
+    entry(ADDR.VENUS_VBUSD, SELECTOR.REDEEM),
+    entry(ADDR.USDT,        SELECTOR.APPROVE),
+    entry(ADDR.USDC,        SELECTOR.APPROVE),
+    entry(ADDR.BUSD,        SELECTOR.APPROVE),
+  ];
+
+  if (riskProfile === 'medium' || riskProfile === 'high') {
+    actions.push(
+      entry(ADDR.VENUS_VBNB, SELECTOR.MINT_BNB),
+      entry(ADDR.VENUS_VBNB, SELECTOR.REDEEM),
+      entry(ADDR.PANCAKE_V2, SELECTOR.SWAP_TKN_TKN),
+      entry(ADDR.PANCAKE_V2, SELECTOR.SWAP_ETH_TKN),
+      entry(ADDR.PANCAKE_V2, SELECTOR.SWAP_TKN_ETH),
+      entry(ADDR.WBNB,       SELECTOR.APPROVE),
+    );
+  }
+
+  if (riskProfile === 'high') {
+    actions.push(
+      entry(ADDR.VENUS_VETH,  SELECTOR.MINT),
+      entry(ADDR.VENUS_VETH,  SELECTOR.REDEEM),
+      entry(ADDR.VENUS_VBTCB, SELECTOR.MINT),
+      entry(ADDR.VENUS_VBTCB, SELECTOR.REDEEM),
+      entry(ADDR.PANCAKE_V3,  SELECTOR.SWAP_TKN_TKN),
+      entry(ADDR.PANCAKE_V3,  SELECTOR.SWAP_ETH_TKN),
+      entry(ADDR.PANCAKE_V3,  SELECTOR.SWAP_TKN_ETH),
+      entry(ADDR.ETH,         SELECTOR.APPROVE),
+      entry(ADDR.BTCB,        SELECTOR.APPROVE),
+      entry(ADDR.CAKE,        SELECTOR.APPROVE),
+    );
+  }
+
+  return actions;
+}
+
+/** Build the Nexus multichain account for the connected EOA */
+async function buildNexusAccount(ownerAddress: Address) {
+  if (typeof window === 'undefined' || !window.ethereum) {
+    throw new Error('No wallet provider');
+  }
+
+  const walletClient = createWalletClient({
+    account: ownerAddress,
+    chain: bsc,
+    transport: custom(window.ethereum),
+  });
+
+  const nexusAccount = await toMultichainNexusAccount({
+    signer: walletClient,
+    chainConfigurations: [
+      {
+        chain: bsc,
+        transport: http(BSC_RPC),
+        version: BSC_MEE_VERSION,
+      },
+    ],
+  });
+
+  return nexusAccount;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Compute the Nexus smart account address for the connected EOA.
+ * Pure computation — no transaction, no gas.
  */
 export async function createSmartAccount(ownerAddress: Address): Promise<SmartAccount> {
   try {
-    // Get user's wallet provider (MetaMask, WalletConnect, etc.)
-    if (typeof window === 'undefined' || !window.ethereum) {
-      throw new Error('No wallet provider found');
-    }
-
-    // Create wallet client from browser wallet (acts as signer)
-    const walletClient = createWalletClient({
-      account: ownerAddress,
-      chain: bsc,
-      transport: custom(window.ethereum),
-    });
-
-    // Create Multichain Nexus Account (NEW Biconomy AbstractJS SDK)
-    const account = await toMultichainNexusAccount({
-      signer: walletClient as any,
-      chainConfigurations: [
-        {
-          chain: bsc,
-          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
-          version: getMEEVersion(MEEVersion.V2_1_0),
-        },
-      ],
-    });
-
-    // Get smart account address for BSC
-    const smartAccountAddress = account.addressOn(bsc.id) as Address;
-
-    console.log('✅ Biconomy Smart Account created:', smartAccountAddress);
-
-    return {
-      address: smartAccountAddress,
-      owner: ownerAddress,
-    };
-  } catch (error) {
-    console.error('Failed to create Biconomy smart account:', error);
-    // Fallback to EOA address
-    return {
-      address: ownerAddress,
-      owner: ownerAddress,
-    };
+    const nexusAccount = await buildNexusAccount(ownerAddress);
+    const addr = nexusAccount.addressOn(bsc.id, true) as Address;
+    console.log('✅ Nexus Smart Account:', addr);
+    return { address: addr, owner: ownerAddress };
+  } catch (err) {
+    console.error('createSmartAccount failed, falling back to EOA:', err);
+    return { address: ownerAddress, owner: ownerAddress };
   }
 }
 
 /**
- * Generate a new session key with permissions based on risk profile
- * @param totalDelegationAmount - TOTAL amount delegated for the entire session in Wei (e.g., 1000 USD = 1000 * 1e18 Wei)
- *                                 The agent can only trade with this total amount during the session lifetime
+ * Generate an agent session keypair client-side.
+ * Private key stored in localStorage only — never sent to server.
  */
 export function generateSessionKey(
-  smartAccountAddress: Address,
+  _smartAccountAddress: Address,
   riskProfile: 'low' | 'medium' | 'high',
-  totalDelegationAmount?: bigint
 ): SessionKeyData {
-  // Generate random private key for session
-  const sessionPrivateKey = generateRandomPrivateKey();
-  const sessionAccount = privateKeyToAccount(sessionPrivateKey);
-
-  // Session valid for 7 days
-  const now = Math.floor(Date.now() / 1000);
-  const validAfter = now;
-  const validUntil = now + 7 * 24 * 60 * 60; // 7 days
-
-  // Build FlowCap permissions based on risk profile and total delegation limit
-  const permissions = buildFlowCapPermissions(riskProfile, totalDelegationAmount);
-
+  const sessionPrivateKey = generatePrivateKey();
+  const sessionAccount    = privateKeyToAccount(sessionPrivateKey);
+  const now               = Math.floor(Date.now() / 1000);
   return {
-    sessionAddress: sessionAccount.address,
+    sessionAddress:   sessionAccount.address,
     sessionPrivateKey,
-    validUntil,
-    validAfter,
-    permissions,
+    validAfter:       now,
+    validUntil:       now + 7 * 24 * 60 * 60,
+    riskProfile,
   };
 }
 
 /**
- * Build FlowCap-specific session key permissions based on risk profile
- * Permissions vary by risk tolerance:
- * - LOW: Only stablecoins (USDT, USDC, BUSD) on Venus lending
- * - MEDIUM: Stablecoins + BNB on Venus + PancakeSwap stablecoin pairs
- * - HIGH: All tokens including volatile assets (ETH, BTCB, CAKE)
+ * Grant smart session permission via Biconomy MEE + typed-data signature.
  *
- * @param totalDelegationAmount - TOTAL amount the user delegates for the session (not per-transaction!)
- *                                 The session can trade with up to this total amount
- */
-function buildFlowCapPermissions(
-  riskProfile: 'low' | 'medium' | 'high',
-  totalDelegationAmount?: bigint
-): SessionKeyPermission[] {
-  // Function selectors
-  const SWAP_EXACT_TOKENS_FOR_TOKENS = '0x38ed1739'; // PancakeSwap
-  const SWAP_EXACT_ETH_FOR_TOKENS = '0x7ff36ab5';
-  const SWAP_EXACT_TOKENS_FOR_ETH = '0x18cbafe5';
-  const MINT = '0xa0712d68'; // Venus supply
-  const REDEEM_UNDERLYING = '0x852a12e3'; // Venus withdraw
-  const APPROVE = '0x095ea7b3'; // ERC20 approve
-
-  // Contract addresses (BNB Chain mainnet)
-  const PANCAKESWAP_ROUTER_V2 = '0x10ED43C718714eb63d5aA57B78B54704E256024E' as Address;
-  const PANCAKESWAP_ROUTER_V3 = '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4' as Address;
-
-  // Venus vTokens
-  const VENUS_VUSDT = '0xfD5840Cd36d94D7229439859C0112a4185BC0255' as Address;
-  const VENUS_VUSDC = '0xecA88125a5ADbe82614ffC12D0DB554E2e2867C8' as Address;
-  const VENUS_VBUSD = '0x95c78222B3D6e262426483D42CfA53685A67Ab9D' as Address;
-  const VENUS_VBNB = '0xA07c5b74C9B40447a954e1466938b865b6BBea36' as Address;
-  const VENUS_VETH = '0xf508fCD89b8bd15579dc79A6827cB4686A3592c8' as Address;
-  const VENUS_VBTCB = '0x882C173bC7Ff3b7786CA16dfeD3DFFfb9Ee7847B' as Address;
-
-  // Underlying tokens
-  const USDT_ADDRESS = '0x55d398326f99059fF775485246999027B3197955' as Address;
-  const USDC_ADDRESS = '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' as Address;
-  const BUSD_ADDRESS = '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56' as Address;
-  const WBNB_ADDRESS = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c' as Address;
-  const ETH_ADDRESS = '0x2170Ed0880ac9A755fd29B2688956BD959F933F8' as Address;
-  const BTCB_ADDRESS = '0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c' as Address;
-  const CAKE_ADDRESS = '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82' as Address;
-
-  const permissions: SessionKeyPermission[] = [];
-
-  // Total session delegation limits by risk profile (defaults)
-  const DEFAULT_DELEGATION_LIMIT = {
-    low: BigInt('5000000000000000000000'), // 5k USD total
-    medium: BigInt('10000000000000000000000'), // 10k USD total
-    high: BigInt('50000000000000000000000'), // 50k USD total
-  }[riskProfile];
-
-  // Use custom delegation amount if provided, otherwise use risk profile default
-  // Also enforce that custom amount doesn't exceed risk profile maximum
-  const TOTAL_DELEGATION = totalDelegationAmount
-    ? (totalDelegationAmount < DEFAULT_DELEGATION_LIMIT ? totalDelegationAmount : DEFAULT_DELEGATION_LIMIT)
-    : DEFAULT_DELEGATION_LIMIT;
-
-  console.log(`💰 Total session delegation: ${Number(TOTAL_DELEGATION) / 1e18} USD (risk: ${riskProfile})`);
-
-  // === LOW RISK PROFILE ===
-  // Only stablecoins on Venus lending (no swaps, no volatile assets)
-  if (riskProfile === 'low') {
-    // Venus USDT
-    permissions.push(
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // Venus USDC
-    permissions.push(
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // Venus BUSD
-    permissions.push(
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // Token approvals (stablecoins only)
-    permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-  }
-
-  // === MEDIUM RISK PROFILE ===
-  // Stablecoins + BNB, Venus + PancakeSwap stablecoin/BNB pairs
-  if (riskProfile === 'medium') {
-    // All low risk permissions
-    permissions.push(
-      // Venus USDT
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // Venus USDC
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // Venus BUSD
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // Venus BNB (added for medium)
-      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // PancakeSwap swaps (stablecoin pairs + BNB pairs only)
-    permissions.push(
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // Token approvals (stablecoins + BNB)
-    permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-  }
-
-  // === HIGH RISK PROFILE ===
-  // All tokens including volatile assets (ETH, BTCB, CAKE), all protocols
-  if (riskProfile === 'high') {
-    // All Venus markets
-    permissions.push(
-      // Stablecoins
-      { target: VENUS_VUSDT, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDT, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDC, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VUSDC, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBUSD, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBUSD, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // BNB
-      { target: VENUS_VBNB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBNB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // Volatile assets (ETH, BTCB)
-      { target: VENUS_VETH, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VETH, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBTCB, functionSelector: MINT as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: VENUS_VBTCB, functionSelector: REDEEM_UNDERLYING as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // All PancakeSwap routers (V2 and V3)
-    permissions.push(
-      // V2
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V2, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION },
-
-      // V3
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_ETH_FOR_TOKENS as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: PANCAKESWAP_ROUTER_V3, functionSelector: SWAP_EXACT_TOKENS_FOR_ETH as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-
-    // All token approvals
-    permissions.push(
-      { target: USDT_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: USDC_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: BUSD_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: WBNB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: ETH_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: BTCB_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION },
-      { target: CAKE_ADDRESS, functionSelector: APPROVE as Hex, valueLimit: TOTAL_DELEGATION }
-    );
-  }
-
-  return permissions;
-}
-
-/**
- * Generate a random private key
- */
-function generateRandomPrivateKey(): Hex {
-  const randomBytes = new Uint8Array(32);
-  crypto.getRandomValues(randomBytes);
-  return `0x${Array.from(randomBytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')}` as Hex;
-}
-
-/**
- * Derive deterministic smart account address from owner
- * In production: Use Biconomy's actual smart account factory
- */
-function deriveSmartAccountAddress(ownerAddress: Address): Address {
-  // This is a placeholder implementation
-  // In production, you'd call Biconomy's smart account factory
-  // to get the actual counterfactual address
-
-  // For now, we'll use a simple derivation
-  // Real implementation would be:
-  // const smartAccount = await biconomySDK.getSmartAccountAddress(ownerAddress)
-
-  return ownerAddress; // Temporary: use EOA address
-}
-
-/**
- * Delegate session key on-chain via Biconomy
- * This must be called AFTER user signs the delegation message
+ * Uses toSmartSessionsModule + grantPermissionTypedDataSign — user only signs typed-data.
+ * MEE handles gas for module installation (sponsorship mode).
+ * Session time-bounds are enforced on-chain via TimeFramePolicy per action.
+ *
+ * Returns serialised sessionDetails for the agent to use via usePermission().
  */
 export async function delegateSessionKey(
   ownerAddress: Address,
   smartAccountAddress: Address,
-  sessionKeyData: SessionKeyData
-): Promise<{ success: boolean; txHash?: string; error?: string }> {
-  const meeApiKey = process.env.NEXT_PUBLIC_BICONOMY_MEE_API_KEY;
-
-  if (!meeApiKey || meeApiKey.includes('YOUR')) {
-    console.warn('⚠️ Biconomy not configured - using optimistic mode');
-    console.log('Session key stored locally only (no on-chain delegation)');
-    return {
-      success: true,
-      txHash: undefined,
-    };
-  }
-
+  sessionKeyData: SessionKeyData,
+): Promise<{ success: boolean; compressedSessionData?: string; txHash?: string; error?: string }> {
   try {
-    // Get user's wallet provider
-    if (typeof window === 'undefined' || !window.ethereum) {
-      throw new Error('No wallet provider found');
+    const nexusAccount = await buildNexusAccount(ownerAddress);
+
+    const meeClientParams: Parameters<typeof createMeeClient>[0] = {
+      account: nexusAccount,
+    };
+    if (MEE_API_KEY) {
+      (meeClientParams as any).apiKey = MEE_API_KEY;
     }
+    const meeClient = await createMeeClient(meeClientParams);
 
-    // Create wallet client from browser wallet
-    const walletClient = createWalletClient({
-      account: ownerAddress,
-      chain: bsc,
-      transport: custom(window.ethereum),
+    // Agent signer derived from session key
+    const agentSigner = privateKeyToAccount(sessionKeyData.sessionPrivateKey);
+
+    // Extend MEE client with session actions
+    const sessionClient = meeClient.extend(meeSessionActions);
+
+    // Skip prepareForPermissions (supertransaction module install) — BSC confirmation
+    // latency causes "Execution deadline limit exceeded" on MEE's L1/BSC supertxs.
+    // Instead, the agent uses mode "ENABLE_AND_USE" on its first usePermission() call,
+    // which installs the SmartSessions module and executes in a single UserOp.
+    console.log('🔑 Granting session permissions via typed-data signature...');
+
+    const actions = buildActions(
+      sessionKeyData.riskProfile,
+      sessionKeyData.validAfter,
+      sessionKeyData.validUntil,
+    );
+
+    // grantPermissionTypedDataSign via meeSessionActions — user signs typed-data, no gas
+    const sessionDetails = await sessionClient.grantPermissionTypedDataSign({
+      redeemer: agentSigner.address,
+      actions,
     });
 
-    // Create Multichain Nexus Account
-    const account = await toMultichainNexusAccount({
-      signer: walletClient as any,
-      chainConfigurations: [
-        {
-          chain: bsc,
-          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
-          version: getMEEVersion(MEEVersion.V2_1_0),
-        },
-      ],
+    console.log('✅ Session permissions granted');
+
+    const compressedSessionData = JSON.stringify({
+      sessionDetails,
+      smartAccountAddress,
+      sessionAddress: sessionKeyData.sessionAddress,
+      riskProfile:    sessionKeyData.riskProfile,
+      validAfter:     sessionKeyData.validAfter,
+      validUntil:     sessionKeyData.validUntil,
     });
 
-    console.log('📝 Enabling session key on smart account...');
+    return { success: true, compressedSessionData };
 
-    // Build session key module data
-    // Biconomy v4 uses a session validation module
-    // The session key permissions are encoded into the module data
-    const sessionKeyModule = {
-      sessionKeyAddress: sessionKeyData.sessionAddress,
-      sessionValidUntil: BigInt(sessionKeyData.validUntil),
-      sessionValidAfter: BigInt(sessionKeyData.validAfter),
-      // Encode permissions as session key data
-      sessionKeyData: encodeSessionPermissions(sessionKeyData.permissions),
-      permissions: sessionKeyData.permissions,
-    };
-
-    // Create UserOperation to enable the session key
-    // This will be a transaction to the SessionKeyManager module
-    const enableSessionTx = {
-      to: smartAccountAddress, // Smart account will receive the enable call
-      data: encodeEnableSessionKey(sessionKeyModule),
-      value: BigInt(0),
-    };
-
-    // Create MEE Client for gas-sponsored transactions
-    const meeClient = await createMeeClient({
-      account,
-      apiKey: meeApiKey,
-    });
-
-    // Build instruction for the transaction
-    const instruction = account.build({
-      type: 'default',
-      data: {
-        calls: [{
-          to: enableSessionTx.to,
-          data: enableSessionTx.data,
-          value: enableSessionTx.value,
-        }],
-        chainId: bsc.id,
-      },
-    });
-
-    // Get quote for the transaction (with sponsorship)
-    const quote = await meeClient.getQuote({
-      instructions: [instruction],
-      feeToken: {
-        address: '0x55d398326f99059fF775485246999027B3197955' as Address, // USDT on BSC
-        chainId: bsc.id,
-      },
-    });
-
-    // Execute the quote
-    const { hash } = await meeClient.executeQuote({ quote });
-
-    // Wait for transaction receipt
-    const receipt = await meeClient.waitForSupertransactionReceipt({ hash });
-
-    // Get transaction hash from receipt
-    const transactionHash = hash;
-
-    console.log('✅ Session key delegated on-chain!');
-    console.log('Transaction:', `https://bscscan.com/tx/${transactionHash}`);
-
-    return {
-      success: true,
-      txHash: transactionHash,
-    };
   } catch (error: any) {
-    console.error('❌ Failed to delegate session key:', error);
+    console.error('❌ delegateSessionKey failed:', error);
 
-    // If it's a user rejection, handle gracefully
     if (error.code === 4001 || error.message?.includes('User rejected')) {
-      return {
-        success: false,
-        error: 'User rejected the transaction',
-      };
+      return { success: false, error: 'User rejected the signature' };
     }
 
-    // For other errors, fall back to optimistic mode
-    console.warn('⚠️ Falling back to optimistic mode (local session key only)');
-    return {
-      success: true,
-      txHash: undefined,
-    };
+    return { success: false, error: error.message || 'Session key delegation failed' };
   }
-}
-
-/**
- * Encode session permissions into session key data format
- */
-function encodeSessionPermissions(permissions: SessionKeyPermission[]): Hex {
-  // Biconomy session key data format:
-  // For each permission: target (20 bytes) + selector (4 bytes) + valueLimit (32 bytes)
-
-  let encoded = '0x';
-
-  for (const permission of permissions) {
-    // Remove '0x' prefix and pad/slice to correct lengths
-    const target = permission.target.slice(2).toLowerCase();
-    const selector = permission.functionSelector.slice(2).toLowerCase();
-    const valueLimit = permission.valueLimit.toString(16).padStart(64, '0');
-
-    encoded += target + selector + valueLimit;
-  }
-
-  return encoded as Hex;
-}
-
-// ─── ABI fragments for on-chain calls ────────────────────────
-const SESSION_VALIDATOR_ABI = [
-  {
-    name: 'registerSessionKey',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'sessionKeyAddress', type: 'address' },
-      { name: 'validAfter', type: 'uint48' },
-      { name: 'validUntil', type: 'uint48' },
-      { name: 'totalValueLimit', type: 'uint256' },
-      { name: 'maxOpsPerHour_', type: 'uint16' },
-      { name: 'maxOpsPerDay_', type: 'uint16' },
-      {
-        name: 'perms',
-        type: 'tuple[]',
-        components: [
-          { name: 'target', type: 'address' },
-          { name: 'functionSelector', type: 'bytes4' },
-          { name: 'valueLimit', type: 'uint256' },
-        ],
-      },
-    ],
-    outputs: [],
-  },
-  {
-    name: 'revokeSessionKey',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'sessionKeyAddress', type: 'address' }],
-    outputs: [],
-  },
-] as const;
-
-/**
- * Encode the enableSessionKey function call using proper ABI encoding.
- * Generates calldata for SessionValidator.registerSessionKey().
- */
-function encodeEnableSessionKey(sessionModule: {
-  sessionKeyAddress: Address;
-  sessionValidUntil: bigint;
-  sessionValidAfter: bigint;
-  sessionKeyData: Hex;
-  permissions?: SessionKeyPermission[];
-}): Hex {
-  // Build permission tuples for the contract
-  const perms = (sessionModule.permissions || []).map((p) => ({
-    target: p.target,
-    functionSelector: p.functionSelector as `0x${string}`,
-    valueLimit: p.valueLimit,
-  }));
-
-  // Aggregate value limit across all permissions
-  const totalValueLimit = perms.reduce(
-    (sum, p) => (p.valueLimit > sum ? p.valueLimit : sum),
-    BigInt(0)
-  );
-
-  return encodeFunctionData({
-    abi: SESSION_VALIDATOR_ABI,
-    functionName: 'registerSessionKey',
-    args: [
-      sessionModule.sessionKeyAddress,
-      Number(sessionModule.sessionValidAfter),  // uint48
-      Number(sessionModule.sessionValidUntil),  // uint48
-      totalValueLimit,
-      30,  // maxOpsPerHour
-      200, // maxOpsPerDay
-      perms,
-    ],
-  });
-}
-
-/**
- * Submit a UserOperation to Biconomy bundler using session key
- * This is called when the agent executes a transaction
- */
-export async function submitUserOperation(
-  transaction: {
-    to: Address;
-    data: Hex;
-    value?: bigint;
-  },
-  smartAccountAddress: Address,
-  sessionPrivateKey: Hex
-): Promise<{ userOpHash: string; txHash?: string; success: boolean; error?: string }> {
-  const meeApiKey = process.env.NEXT_PUBLIC_BICONOMY_MEE_API_KEY;
-
-  if (!meeApiKey || meeApiKey.includes('YOUR')) {
-    throw new Error('Biconomy MEE API key not configured. Add NEXT_PUBLIC_BICONOMY_MEE_API_KEY to .env');
-  }
-
-  try {
-    // Create session key signer from private key
-    const sessionSigner = privateKeyToAccount(sessionPrivateKey);
-
-    // Create wallet client with session key
-    const sessionWalletClient = createWalletClient({
-      account: sessionSigner,
-      chain: bsc,
-      transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
-    });
-
-    // Create Multichain Nexus Account with SESSION KEY as signer
-    const account = await toMultichainNexusAccount({
-      signer: sessionWalletClient as any,
-      chainConfigurations: [
-        {
-          chain: bsc,
-          transport: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || 'https://1rpc.io/bnb'),
-          version: getMEEVersion(MEEVersion.V2_1_0),
-        },
-      ],
-    });
-
-    // Create MEE Client with gas sponsorship
-    const meeClient = await createMeeClient({
-      account,
-      apiKey: meeApiKey,
-    });
-
-    console.log('📤 Submitting UserOp with session key via MEE...');
-    console.log('Transaction:', {
-      to: transaction.to,
-      value: transaction.value?.toString() || '0',
-      data: transaction.data.slice(0, 10) + '...',
-    });
-
-    // Build instruction for the transaction
-    const instruction = account.build({
-      type: 'default',
-      data: {
-        calls: [{
-          to: transaction.to,
-          data: transaction.data,
-          value: transaction.value || BigInt(0),
-        }],
-        chainId: bsc.id,
-      },
-    });
-
-    // Get quote for the transaction
-    const quote = await meeClient.getQuote({
-      instructions: [instruction],
-      feeToken: {
-        address: '0x55d398326f99059fF775485246999027B3197955' as Address, // USDT on BSC
-        chainId: bsc.id,
-      },
-    });
-
-    // Execute the quote
-    const { hash } = await meeClient.executeQuote({ quote });
-
-    // Wait for receipt
-    await meeClient.waitForSupertransactionReceipt({ hash });
-
-    console.log('✅ UserOp executed successfully!');
-    console.log('Transaction:', `https://bscscan.com/tx/${hash}`);
-
-    return {
-      userOpHash: hash,
-      txHash: hash,
-      success: true,
-    };
-  } catch (error: any) {
-    console.error('❌ Failed to submit UserOp:', error);
-
-    return {
-      userOpHash: '',
-      success: false,
-      error: error.message || 'Unknown error',
-    };
-  }
-}
-
-/**
- * Execute a swap using session key
- * High-level wrapper for swaps
- */
-export async function executeSwapWithSessionKey(
-  params: {
-    tokenIn: Address;
-    tokenOut: Address;
-    amountIn: bigint;
-    minAmountOut: bigint;
-    router: Address; // PancakeSwap router address
-  },
-  smartAccountAddress: Address,
-  sessionPrivateKey: Hex
-): Promise<{ success: boolean; txHash?: string; error?: string }> {
-  // Build swap calldata
-  // This is simplified - in production, use proper ABI encoding
-  const swapCalldata = encodeSwapCalldata(params);
-
-  const transaction = {
-    to: params.router,
-    data: swapCalldata,
-    value: BigInt(0),
-  };
-
-  const result = await submitUserOperation(transaction, smartAccountAddress, sessionPrivateKey);
-
-  return {
-    success: result.success,
-    txHash: result.txHash,
-    error: result.error,
-  };
-}
-
-// ─── PancakeSwap Router ABI fragment ─────────────────────────
-const PANCAKESWAP_ROUTER_ABI = [
-  {
-    name: 'swapExactTokensForTokens',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'amountIn', type: 'uint256' },
-      { name: 'amountOutMin', type: 'uint256' },
-      { name: 'path', type: 'address[]' },
-      { name: 'to', type: 'address' },
-      { name: 'deadline', type: 'uint256' },
-    ],
-    outputs: [{ name: 'amounts', type: 'uint256[]' }],
-  },
-] as const;
-
-/**
- * Encode swap calldata for PancakeSwap using proper ABI encoding.
- */
-function encodeSwapCalldata(params: {
-  tokenIn: Address;
-  tokenOut: Address;
-  amountIn: bigint;
-  minAmountOut: bigint;
-  recipient?: Address;
-}): Hex {
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200); // 20 min
-  const recipient = params.recipient || '0x0000000000000000000000000000000000000000' as Address;
-
-  return encodeFunctionData({
-    abi: PANCAKESWAP_ROUTER_ABI,
-    functionName: 'swapExactTokensForTokens',
-    args: [
-      params.amountIn,
-      params.minAmountOut,
-      [params.tokenIn, params.tokenOut],
-      recipient,
-      deadline,
-    ],
-  });
 }

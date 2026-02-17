@@ -31,7 +31,7 @@ export function WalletConnect() {
           </div>
           <p className="text-white font-semibold mb-1">Connect Your Wallet</p>
           <p className="text-sm text-zinc-500 mb-6 text-center max-w-xs">
-            Connect a wallet to start delegating yield optimization to FlowCap.
+            Connect a wallet to start delegating yield optimization to CustoFi.
           </p>
           {/* The actual connect button is handled by RainbowKit's ConnectButton in the header */}
           <p className="text-xs text-zinc-600">Use the Connect button in the header</p>

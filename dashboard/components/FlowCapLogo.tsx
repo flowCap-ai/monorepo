@@ -13,7 +13,7 @@ export function FlowCapLogo({
   return (
     <img
       src="/HashFox_logo.jpg"
-      alt="FlowCap"
+      alt="CustoFi"
       width={size}
       height={size}
       className={`rounded-lg object-cover ${className}`}
@@ -42,7 +42,7 @@ export function FlowCapWordmark({
           className="font-bold text-white tracking-tight leading-none"
           style={{ fontSize: size * 0.55 }}
         >
-          FlowCap
+          CustoFi
         </span>
         {showSubtitle && (
           <span className="text-[10px] text-zinc-500 tracking-wider uppercase mt-0.5">

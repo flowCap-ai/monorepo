@@ -10,6 +10,8 @@ const nextConfig = {
   webpack: (config) => {
     config.resolve.fallback = { fs: false, net: false, tls: false };
     config.externals.push('pino-pretty', 'lokijs', 'encoding');
+    // Alias React Native module used by @metamask/sdk browser bundle
+    config.resolve.alias['@react-native-async-storage/async-storage'] = false;
     // Allow imports from ../agents/ to resolve node_modules from this project
     config.resolve.modules = [
       path.resolve(__dirname, 'node_modules'),

@@ -1,0 +1,12 @@
+diff --git a/node_modules/@wagmi/connectors/dist/esm/porto.js b/node_modules/@wagmi/connectors/dist/esm/porto.js
+index 52eec55..de771a2 100644
+--- a/node_modules/@wagmi/connectors/dist/esm/porto.js
++++ b/node_modules/@wagmi/connectors/dist/esm/porto.js
+@@ -1,6 +1,6 @@
+ import { ChainNotConfiguredError, createConnector, } from '@wagmi/core';
+ import { RpcSchema } from 'porto';
+-import { z } from 'porto/internal';
++const z = { object: () => ({ parse: (x) => x }), string: () => ({ optional: () => ({}) }), optional: () => ({}) };
+ import { getAddress, numberToHex, SwitchChainError, UserRejectedRequestError, withRetry, } from 'viem';
+ export function porto(parameters = {}) {
+     return createConnector((wagmiConfig) => {

@@ -12,7 +12,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
-import { createSmartAccount, generateSessionKey, delegateSessionKey, type SessionKeyData } from '../lib/biconomyClient';
+import { createSmartAccount, generateSessionKey, delegateSessionKey } from '../lib/biconomyClient';
 import { cn } from '../lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
@@ -33,6 +33,8 @@ import {
   TrendingUp,
   Zap,
   ChevronRight,
+  ExternalLink,
+  Hash,
 } from 'lucide-react';
 
 type RiskProfile = 'low' | 'medium' | 'high';
@@ -107,12 +109,14 @@ export default function FlowCapDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [isDelegated, setIsDelegated] = useState(false);
   const [isMonitoring, setIsMonitoring] = useState(false);
+  const [delegationTxHash, setDelegationTxHash] = useState<string | null>(null);
 
   useEffect(() => {
     const delegated = localStorage.getItem('flowcap-delegated');
     if (delegated === 'true') {
       setIsDelegated(true);
       setIsMonitoring(true);
+      setDelegationTxHash(localStorage.getItem('flowcap-delegation-tx') || null);
     }
   }, []);
 
@@ -143,16 +147,15 @@ export default function FlowCapDashboard() {
       }
 
       const smartAccount = await createSmartAccount(address);
-      const totalDelegationWei = BigInt(Math.floor(totalDelegationUSD * 1e18));
-      const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile, totalDelegationWei);
+      const sessionKeyData = generateSessionKey(smartAccount.address, riskProfile);
 
       // Step 2: Sign delegation
       setDelegationStep('Waiting for wallet signature...');
       setDelegationProgress(40);
 
-      const message = `FlowCap Agent Delegation
+      const message = `CustoFi Agent Delegation
 
-I authorize FlowCap to manage my DeFi positions via OpenClaw with these restrictions:
+I authorize CustoFi to manage my DeFi positions via OpenClaw with these restrictions:
 
 Smart Account: ${smartAccount.address}
 Session Key: ${sessionKeyData.sessionAddress}
@@ -170,8 +173,8 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
 
       await signMessageAsync({ message });
 
-      // Step 3: On-chain delegation
-      setDelegationStep('Delegating on-chain...');
+      // Step 3: Smart Sessions delegation (typed-data signature — no gas)
+      setDelegationStep('Granting session permissions...');
       setDelegationProgress(65);
 
       const delegationResult = await delegateSessionKey(
@@ -184,22 +187,17 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
         throw new Error(`Delegation failed: ${delegationResult.error}`);
       }
 
-      // Step 4: Transmit to agent
+      // Step 4: Transmit to agent (public data only — no private key)
       setDelegationStep('Connecting to agent...');
       setDelegationProgress(85);
 
       const delegationPayload = {
-        sessionKey: sessionKeyData.sessionPrivateKey,
-        sessionAddress: sessionKeyData.sessionAddress,
+        sessionAddress: sessionKeyData.sessionAddress,        // public address only
         smartAccountAddress: smartAccount.address,
         riskProfile,
         maxInvestment,
         validUntil: sessionKeyData.validUntil,
-        permissions: sessionKeyData.permissions.map((p) => ({
-          target: p.target,
-          functionSelector: p.functionSelector,
-          valueLimit: p.valueLimit.toString(),
-        })),
+        compressedSessionData: delegationResult.compressedSessionData ?? null,
         chain: { id: 56, name: 'BNB Chain' },
       };
 
@@ -218,11 +216,17 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
       setDelegationProgress(100);
       setDelegationStep('Delegation complete!');
 
+      // Store private key locally only — never sent to server
       localStorage.setItem('flowcap-session-key', sessionKeyData.sessionPrivateKey);
+      localStorage.setItem('flowcap-session-address', sessionKeyData.sessionAddress);
       localStorage.setItem('flowcap-smart-account', smartAccount.address);
       localStorage.setItem('flowcap-risk-profile', riskProfile);
       localStorage.setItem('flowcap-max-investment', maxInvestment);
       localStorage.setItem('flowcap-delegated', 'true');
+      if (delegationResult.txHash) {
+        localStorage.setItem('flowcap-delegation-tx', delegationResult.txHash);
+        setDelegationTxHash(delegationResult.txHash);
+      }
 
       setIsDelegated(true);
       setIsMonitoring(true);
@@ -244,16 +248,18 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
   const resetDelegation = () => {
     localStorage.removeItem('flowcap-delegated');
     localStorage.removeItem('flowcap-session-key');
+    localStorage.removeItem('flowcap-session-address');
     localStorage.removeItem('flowcap-smart-account');
     localStorage.removeItem('flowcap-risk-profile');
     localStorage.removeItem('flowcap-max-investment');
+    localStorage.removeItem('flowcap-delegation-tx');
     setIsDelegated(false);
     setIsMonitoring(false);
+    setDelegationTxHash(null);
     setError(null);
   };
 
   const profile = RISK_PROFILES[riskProfile];
-  const styles = intensityStyles[profile.intensity];
 
   // ─── NOT CONNECTED ─────────────────────────────────────
   if (!isConnected) {
@@ -316,6 +322,27 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
               <p className="text-sm font-mono text-zinc-400">{storedAccount.slice(0, 6)}...{storedAccount.slice(-4)}</p>
             </div>
           </div>
+
+          {delegationTxHash && (
+            <div className="p-3 rounded-lg bg-surface border border-[var(--border)] mb-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Hash className="w-3.5 h-3.5 text-orange-400/60 shrink-0" />
+                <span className="text-[11px] text-zinc-500 uppercase tracking-wider shrink-0">Session Tx</span>
+                <span className="text-xs font-mono text-zinc-400 truncate">
+                  {delegationTxHash.slice(0, 10)}…{delegationTxHash.slice(-8)}
+                </span>
+              </div>
+              <a
+                href={`https://bscscan.com/tx/${delegationTxHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[11px] text-orange-400/70 hover:text-orange-400 transition-colors shrink-0"
+              >
+                BscScan
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
 
           <div className="p-4 rounded-lg bg-orange-500/[0.03] border border-orange-500/10 mb-5">
             <div className="flex items-start gap-3">
