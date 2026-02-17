@@ -9,13 +9,19 @@
  * - Gas costs for harvest operations
  * 
  * Based on the formula:
- * V_final = V_initial · IL_factor · (1 + h · (fee_APY + farming_APY))^(days/h) - gas_costs
+ * V_hold = (V_initial / 2) · (r + 1)           // valeur si HODL
+ * V_pool = V_hold · IL_factor                  // valeur pool après IL
+ * V_final = V_pool · (1 + APY)^n - gas_costs   // valeur finale avec rendements
  * 
  * Where:
- * - IL_factor = (2√r) / (1+r)  [r = price_ratio = P_final / P_initial]
+ * - r = price_ratio = P_final / P_initial
+ * - IL_factor = (2√r) / (1+r)
  * - fee_APY = (V_24h · fee_tier) / (TVL_lp + V_initial)
  * - farming_APY = (annual_emissions · w_pair_ratio · P_reward) / (TVL_staked + V_initial)
- * - gas_costs = gas_per_tx · P_gas · P_native · ⌈days/h + 1⌉
+ * - gas_costs = open_gas + harvest_gas + close_gas
+ *   - open_gas = 550000 · P_gas · 10^-9 · P_BNB
+ *   - harvest_gas = gas_per_tx · P_gas · 10^-9 · P_BNB · ⌈days/h⌉
+ *   - close_gas = 550000 · P_gas · 10^-9 · P_BNB
  */
 
 import type { Address } from 'viem';
@@ -167,15 +173,21 @@ export function calculateFarmingAPY(
 }
 
 /**
- * Calculate gas costs for harvest operations
+ * Calculate gas costs for LP operations (open, harvest, close)
  * 
- * Formula: gas_cost = gas_per_tx · P_gas · P_native · ⌈days/h + 1⌉
+ * Formula: gas_cost = open_gas + harvest_gas + close_gas
  * 
  * Where:
- * - gas_per_tx is gas units per transaction (e.g., 730 for harvest)
- * - P_gas is gas price in Gwei
- * - P_native is the price of the native token (BNB) in USD
- * - ⌈days/h + 1⌉ is the number of transactions (ceiling function)
+ * - open_gas = 550000 · P_gas · 10^-9 · P_BNB (opening position)
+ * - harvest_gas = gas_per_tx · P_gas · 10^-9 · P_BNB · ⌈days/h⌉ (harvest operations)
+ * - close_gas = 550000 · P_gas · 10^-9 · P_BNB (closing position)
+ * 
+ * Parameters:
+ * - gas_per_tx: gas units per harvest transaction (e.g., 730)
+ * - P_gas: gas price in Gwei
+ * - P_BNB: price of BNB in USD
+ * - days: investment period
+ * - harvestFrequencyHours: hours between harvests
  */
 export function calculateGasCosts(
   days: number,
@@ -184,15 +196,25 @@ export function calculateGasCosts(
   gasPriceGwei: number,
   nativeTokenPrice: number
 ): number {
+  // Gas cost for opening position (550,000 gas units)
+  const openGasCostBNB = (550000 * gasPriceGwei) / 1e9;
+  const openGasCostUSD = openGasCostBNB * nativeTokenPrice;
+  
+  // Gas cost for closing position (550,000 gas units)
+  const closeGasCostBNB = (550000 * gasPriceGwei) / 1e9;
+  const closeGasCostUSD = closeGasCostBNB * nativeTokenPrice;
+  
   // Number of harvest transactions
-  const numTransactions = Math.ceil(days * 24 / harvestFrequencyHours) + 1;
+  const numHarvestTransactions = Math.ceil(days * 24 / harvestFrequencyHours);
   
-  // Gas cost per transaction in BNB
-  // Formula: (gas_units * gas_price_gwei) / 1e9 = BNB cost
-  const gasCostPerTxBNB = (gasPerTx * gasPriceGwei) / 1e9;
+  // Gas cost per harvest transaction in BNB
+  const harvestGasCostPerTxBNB = (gasPerTx * gasPriceGwei) / 1e9;
   
-  // Total gas cost in USD
-  const totalGasCostUSD = gasCostPerTxBNB * nativeTokenPrice * numTransactions;
+  // Total harvest gas costs in USD
+  const totalHarvestGasCostUSD = harvestGasCostPerTxBNB * nativeTokenPrice * numHarvestTransactions;
+  
+  // Total gas cost = open + harvest + close
+  const totalGasCostUSD = openGasCostUSD + totalHarvestGasCostUSD + closeGasCostUSD;
   
   return totalGasCostUSD;
 }
@@ -200,15 +222,20 @@ export function calculateGasCosts(
 /**
  * Calculate final value with compounding
  * 
- * Formula: V_final = V_initial · IL_factor · (1 + h · (fee_APY + farming_APY))^(days/h) - gas_costs
+ * Formula:
+ * V_hold = (V_initial / 2) · (r + 1)           // valeur si HODL
+ * V_pool = V_hold · IL_factor                  // valeur pool après IL
+ * V_final = V_pool · (1 + APY)^n - gas_costs   // valeur finale avec rendements
  * 
  * This is the core formula that combines all components:
- * 1. Apply impermanent loss factor
- * 2. Apply compounded yield (fees + farming rewards)
- * 3. Subtract gas costs
+ * 1. Calculate HODL value
+ * 2. Apply impermanent loss factor
+ * 3. Apply compounded yield (fees + farming rewards)
+ * 4. Subtract gas costs
  */
 export function calculateFinalValue(
   initialInvestment: number,
+  priceRatio: number,
   impermanentLossFactor: number,
   totalAPY: number,
   days: number,
@@ -223,10 +250,16 @@ export function calculateFinalValue(
   // Number of compounding periods
   const numPeriods = days / harvestFrequencyDays;
   
-  // Apply compound interest formula: A = P(1 + r)^n
-  const valueBeforeGas = initialInvestment * impermanentLossFactor * Math.pow(1 + ratePerHarvest, numPeriods);
+  // Step 1: Calculate HODL value (value if you just held the tokens)
+  const V_hold = (initialInvestment / 2) * (priceRatio + 1);
   
-  // Subtract gas costs
+  // Step 2: Apply impermanent loss to get pool value
+  const V_pool = V_hold * impermanentLossFactor;
+  
+  // Step 3: Apply compound interest formula: A = P(1 + r)^n
+  const valueBeforeGas = V_pool * Math.pow(1 + ratePerHarvest, numPeriods);
+  
+  // Step 4: Subtract gas costs
   const finalValue = valueBeforeGas - gasCosts;
   
   return finalValue;
@@ -245,6 +278,7 @@ export function calculateOptimalHarvestFrequency(
   gasPerTx: number,
   gasPriceGwei: number,
   nativeTokenPrice: number,
+  priceRatio: number,
   impermanentLossFactor: number = 1.0
 ): number {
   // Test different harvest frequencies (in hours)
@@ -257,6 +291,7 @@ export function calculateOptimalHarvestFrequency(
     const gasCosts = calculateGasCosts(days, freq, gasPerTx, gasPriceGwei, nativeTokenPrice);
     const finalValue = calculateFinalValue(
       initialInvestment,
+      priceRatio,
       impermanentLossFactor,
       totalAPY,
       days,
@@ -402,6 +437,7 @@ export function performSensitivityAnalysis(
     );
     const finalValue = calculateFinalValue(
       params.V_initial,
+      ratio,
       il.factor,
       totalAPY,
       config.days,
@@ -479,6 +515,7 @@ export async function analyzeLPV2Position(
   // Calculate final value
   const expectedValue = calculateFinalValue(
     params.V_initial,
+    analysisConfig.priceChangeRatio!,
     ilFactor,
     totalAPY,
     analysisConfig.days,
@@ -499,6 +536,7 @@ export async function analyzeLPV2Position(
     analysisConfig.gasPerTransaction!,
     params.P_gas,
     params.P_BNB,
+    analysisConfig.priceChangeRatio!,
     ilFactor
   );
   
@@ -666,7 +704,15 @@ export function calculateOptimizedFinalValue(
     const harvestFrequencyDays = h / 24;
     const ratePerHarvest = (totalAPY / 100 / 365) * harvestFrequencyDays;
     const numPeriods = days / harvestFrequencyDays;
-    const valueBeforeGas = V_initial * IL_factor * Math.pow(1 + ratePerHarvest, numPeriods);
+    
+    // Step 1: Calculate HODL value (value if you just held the tokens)
+    const V_hold = (V_initial / 2) * (r + 1);
+    
+    // Step 2: Apply impermanent loss to get pool value
+    const V_pool = V_hold * IL_factor;
+    
+    // Step 3: Apply compound interest
+    const valueBeforeGas = V_pool * Math.pow(1 + ratePerHarvest, numPeriods);
     const V_final = valueBeforeGas - totalGasCost;
     
     if (V_final > bestVFinal) {

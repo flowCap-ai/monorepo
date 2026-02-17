@@ -1,0 +1,51 @@
+{
+  "config": {
+    "protocol": "Venus",
+    "asset": "USDT",
+    "chain": "BSC",
+    "initialSupply": 10000,
+    "periodDays": 30,
+    "numSimulations": 1000
+  },
+  "interestRateModel": {
+    "modelType": "JumpRate",
+    "baseRatePerYear": 0,
+    "multiplierPerYear": 0.048,
+    "jumpMultiplierPerYear": 0.69,
+    "kink": 0.8,
+    "reserveFactor": 0.05
+  },
+  "utilizationStatistics": {
+    "mean": 0.8498162856184565,
+    "std": 0.009927735326252757,
+    "min": 0.8223371634287507,
+    "max": 0.8769300148565669,
+    "median": 0.8492409607806517
+  },
+  "badDebtStatistics": {
+    "totalBadDebt": 0,
+    "eventCount": 0,
+    "annualizedRate": 0,
+    "eventsPerYear": 0
+  },
+  "analysis": {
+    "meanFinalValue": 10047.27481863944,
+    "stdFinalValue": 4.994941256890598,
+    "medianFinalValue": 10047.472662407417,
+    "percentile5": 10039.260313235483,
+    "percentile95": 10055.11875491298,
+    "meanReturn": 47.274818639434365,
+    "totalReturnPercent": 0.47274818639434363,
+    "annualizedAPY": 5.906047002850556,
+    "meanSupplyAPY": 5.871318857934261,
+    "utilizationMean": 0.8496547513954102,
+    "badDebtLosses": 0,
+    "optimalHarvestFrequency": 30,
+    "totalGasCost": 1.08,
+    "harvestCount": 1,
+    "probabilityOfLoss": 0,
+    "maxDrawdown": 30.562197014918638,
+    "sharpeRatio": 9.464539462644947
+  },
+  "timestamp": "2026-02-17T09:33:56.307Z"
+}

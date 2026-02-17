@@ -1,0 +1,29 @@
+{
+  "pair": "USDT-WBNB",
+  "initialInvestment": 100,
+  "period": 365,
+  "expectedFinalValue": 194.74675873229393,
+  "expectedReturn": 94.74675873229413,
+  "expectedReturnPercent": 94.74675873229413,
+  "annualizedAPY": 94.74675873229413,
+  "risk": 53.379200955565175,
+  "standardDeviation": 53.379200955565175,
+  "medianVFinal": 187.89110597444932,
+  "probabilityOfLoss": 0.011,
+  "probabilityOfProfit": 0.989,
+  "worstCase5Percentile": 124.04405482109003,
+  "bestCase5Percentile": 295.02104266861465,
+  "percentile25": 156.6080929817455,
+  "percentile75": 225.2843805606491,
+  "valueAtRisk5": -24.04405482109003,
+  "mu": 0.0002472802059118945,
+  "sigma": 0.028268559489401855,
+  "dataSource": "Historical (CoinGecko)",
+  "numSimulations": 1000,
+  "poolInfo": {
+    "name": "USDT-WBNB (V2)",
+    "tvl": 34401073.48,
+    "volume24h": 7096656.04,
+    "hasFarming": true
+  }
+}
