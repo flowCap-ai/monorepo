@@ -1,326 +1,316 @@
-<p align="center">
-  <img src="dashboard/public/hashfoxblack.png" alt="FlowCap" width="120" />
-</p>
+# FlowCap Monorepo
 
-<h1 align="center">FlowCap</h1>
-<p align="center"><strong>Autonomous OpenClaw Wealth Manager for DeFi</strong></p>
+Complete setup for FlowCap - Autonomous DeFi Wealth Manager on BNB Chain
 
-<p align="center">
-  <em>One Click · One Signature · Zero Configuration</em>
-</p>
+## Overview
 
-<p align="center">
-  <a href="#architecture">Architecture</a> •
-  <a href="#features">Features</a> •
-  <a href="#tech-stack">Tech Stack</a> •
-  <a href="#getting-started">Getting Started</a> •
-  <a href="#security">Security</a> •
-  <a href="#team">Team</a>
-</p>
-
----
-
-## The Problem
-
-DeFi yield optimization is **complex, time-consuming, and risky**:
-
-- Users must manually monitor dozens of pools across multiple protocols 24/7
-- Rebalancing requires gas estimation, slippage management, and multi-step transactions
-- Existing "yield aggregators" are centralized custodial solutions — users lose control of their funds
-- No tool combines **AI-driven analysis** with **non-custodial security guarantees**
-
-## Our Solution
-
-**FlowCap** is an autonomous AI agent that manages your DeFi positions on BNB Chain **24/7**, powered by [OpenClaw](https://openclaw.ai) and secured by **Biconomy ERC-4337 session keys**.
-
-The agent **physically cannot steal your funds** — session keys restrict operations to yield optimization only, with `transfer` and `transferFrom` explicitly blocked at the smart contract level.
-
-```
-User signs once → Agent monitors every 5 min → Finds better yield → Reallocates automatically
-```
-
-### How It Works
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  USER (Browser)                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  Dashboard (Next.js)                                           │  │
-│  │  Connect Wallet → Select Risk → Sign Delegation → Done ✓      │  │
-│  └──────────────────────────┬─────────────────────────────────────┘  │
-└─────────────────────────────┼────────────────────────────────────────┘
-                              │ Session Key (ERC-4337)
-┌─────────────────────────────┼────────────────────────────────────────┐
-│  AGENT (OpenClaw - Local)   ▼                                        │
-│  ┌──────────┐ ┌───────────┐ ┌────────────┐ ┌───────────────────┐    │
-│  │ getPools │ │analyzePool│ │ execSwap   │ │ Monte Carlo Sim   │    │
-│  │ 4 protos │ │ + LP V2   │ │ multi-step │ │ 1000+ scenarios   │    │
-│  └────┬─────┘ └─────┬─────┘ └─────┬──────┘ └─────────┬─────────┘    │
-│       │              │             │                  │              │
-│  Scan every 5 min → Analyze → Profitability check → Execute        │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │ UserOperation (ERC-4337)
-┌──────────────────────────────┼───────────────────────────────────────┐
-│  BNB CHAIN                   ▼                                       │
-│  ┌──────────┐ ┌──────────────┐ ┌──────────┐ ┌────────────────────┐  │
-│  │  Venus   │ │ PancakeSwap  │ │  Lista   │ │  Biconomy MEE     │  │
-│  │ Lending  │ │   V2 + V3    │ │   DAO    │ │  Bundler+Paymaster│  │
-│  └──────────┘ └──────────────┘ └──────────┘ └────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Architecture
-
-### Three Independent Modules
-
-| Module | Purpose | Tech |
-|--------|---------|------|
-| **Landing Page** (`/landing`) | Public-facing marketing site | Next.js 14, Framer Motion, Tailwind |
-| **Dashboard** (`/dashboard`) | Wallet connection, delegation, monitoring | Next.js 14, RainbowKit, Wagmi, Biconomy |
-| **Agent** (`/agents`) | Autonomous AI agent with DeFi skills | OpenClaw SDK, Claude 3.5, TypeScript |
-
-### Agent Skills
-
-| Skill | Description |
-|-------|-------------|
-| `getPools` | Discovers pools across Venus, PancakeSwap V2/V3, Lista DAO, Alpaca Finance |
-| `analyzePool` | Calculates APY, TVL, risk scores with protocol-specific logic |
-| `analyzePool-LPV2` | **1,100+ lines** — Advanced LP V2 modeling with Monte Carlo simulation (1,000 scenarios), impermanent loss, VaR 5%, sensitivity analysis |
-| `getPriceHistory` | Fetches historical prices from CoinGecko for volatility estimation |
-| `execSwap` | Multi-step reallocation: withdraw → swap → approve → supply. Full ERC-4337 UserOperation pipeline |
-| `flowcap-monitor` | Orchestrates the 5-minute scan loop with intelligent routing |
-
-### Data Sources
-
-Real-time data from **5 independent sources** feeds the mathematical model:
-
-- **Venus API** — On-chain supply rates
-- **DeFiLlama** — Cross-protocol yield aggregation  
-- **CoinGecko** — Spot & historical prices
-- **DexScreener** — DEX volume & liquidity
-- **Owlracle** — BSC gas prices
-
----
+FlowCap is an AI-powered DeFi yield optimizer that autonomously manages liquidity provider (LP) positions on PancakeSwap V2. It uses account abstraction (ERC-4337) with Biconomy for gasless transactions and session keys for secure automated trading.
 
 ## Features
 
-### OpenClaw-Powered Yield Optimization
-- Autonomous 24/7 monitoring with scans every 5 minutes
-- OpenClaw agent leverages Claude 3.5 Sonnet for decision-making (temperature 0.3 for conservative financial decisions)
-- Multi-protocol discovery: **70+ pools** across 4 protocols on BNB Chain
-- Dynamic reallocation with gas profitability checks
+- **V2 LP Position Analysis**: Mathematical modeling of impermanent loss, trading fees, and farming rewards
+- **Monte Carlo Simulation**: Run 1000 scenarios to estimate expected returns, risk, and probability distribution
+- **Historical Price Data**: Automatically retrieve real historical prices from CoinGecko to calculate price ratios
+- **Harvest Frequency Optimization**: Tests 10 different harvest frequencies to maximize returns
+- **On-Chain Data Integration**: Auto-fetch real pool data (TVL, volume, staking rewards) from DeFiLlama and DexScreener
+- **Risk Assessment**: Calculate expected IL based on historical price movements and probability distributions
+- **Session Keys**: Secure automated trading with time-limited permissions
+- **Dashboard**: Real-time monitoring with transaction history
 
-### Monte Carlo Risk Engine
-- **1,000+ simulation runs** using log-normal distribution
-- Box-Muller transform for random variable generation
-- Maximum Likelihood Estimation (MLE) for parameter fitting
-- Metrics: VaR 5%, expected return, probability of loss, optimal harvest frequency
-- Sensitivity analysis: ±10% and ±25% price deviation scenarios
+## Quick Start
 
-### One-Click Delegation
-- Single signature to delegate restricted permissions
-- No configuration files, no servers, no technical setup
-- Risk profile selection: Conservative / Balanced / Aggressive
-- Customizable delegation amount ($1 - $50,000)
-
-### Non-Custodial Security (ERC-4337)
-- Session keys with **7-day expiration**
-- `transfer` and `transferFrom` **explicitly blocked**
-- Per-risk-profile contract whitelists
-- Rate limiting: 10 tx/hour, 50 tx/day
-- Local execution via OpenClaw — no cloud servers
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Frontend** | Next.js 14 (App Router), React 18, Tailwind CSS, shadcn/ui, Framer Motion |
-| **Wallet** | RainbowKit 2.0, Wagmi 2.5, Viem 2.21 |
-| **Account Abstraction** | Biconomy AbstractJS 1.1.21, ERC-4337, MEE Bundler |
-| **AI Agent** | OpenClaw SDK (autonomous decision-making), Claude 3.5 Sonnet (Anthropic) |
-| **Blockchain** | BNB Chain (BSC, Chain ID 56) |
-| **Protocols** | Venus, PancakeSwap V2/V3, Lista DAO, Alpaca Finance |
-| **Language** | TypeScript 5.3 |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js ≥ 18
-- pnpm (for dashboard & landing)
-- npm (for agents)
-
-### 1. Clone & Install
+### Installation
 
 ```bash
-git clone https://github.com/flowCap-ai/monorepo.git
-cd monorepo
-
-# Dashboard
-cd dashboard && pnpm install
-
-# Landing Page
-cd ../landing && pnpm install
-
-# Agent
-cd ../agents && npm install
+npm install
 ```
 
-### 2. Environment Variables
+### Available Scripts
 
-Create a `.env` file at the root:
-
-```env
-# BNB Chain
-BNB_RPC_URL=https://1rpc.io/bnb
-BNB_CHAIN_ID=56
-
-# Biconomy
-BICONOMY_API_KEY=your_api_key
-NEXT_PUBLIC_BICONOMY_MEE_API_KEY=your_mee_key
-
-# AI
-ANTHROPIC_API_KEY=sk-ant-...
-AI_MODEL=claude-3-5-sonnet-20241022
-
-# Protocol Addresses (BSC Mainnet)
-VENUS_COMPTROLLER=0xfD36E2c2a6789Db23113685031d7F16329158384
-PANCAKESWAP_ROUTER_V2=0x10ED43C718714eb63d5aA57B78B54704E256024E
-PANCAKESWAP_ROUTER_V3=0x13f4EA83D0bd40E75C8222255bc855a974568Dd4
-```
-
-### 3. Run
+#### LP Calculators
 
 ```bash
-# Terminal 1 — Dashboard
-cd dashboard && pnpm dev
-# → http://localhost:3000
+# Monte Carlo simulation - 1000 scenarios with risk analysis (BEST FOR RISK ASSESSMENT)
+npm run calc:montecarlo
 
-# Terminal 2 — Landing Page
-cd landing && pnpm dev
-# → http://localhost:3001
+# Interactive calculator with historical price data (RECOMMENDED)
+npm run calc:historical
 
-# Terminal 3 — Agent
-cd agents && npm start
-# → Autonomous monitoring starts
+# Auto-fetch on-chain pool data (manual r input)
+npm run calc:onchain
+
+# Manual input calculator
+npm run calc:final
+
+# Quick test with pre-configured scenarios
+npm run quick:final
+
+# Detailed step-by-step calculation breakdown
+npm run debug:calc
 ```
 
-### 4. Usage
+#### Testing
 
-1. Open the **Dashboard** at `http://localhost:3000`
-2. Connect your wallet (BNB Chain)
-3. Select your risk profile
-4. Set your delegation amount
-5. Click **"Delegate to OpenClaw"** and sign once
-6. Close the browser — the agent runs autonomously
+```bash
+# Test Monte Carlo simulation
+npm run test:montecarlo
 
----
+# Test historical price retrieval
+npm run test:pricehistory
 
-## Security
+# Test LP V2 analysis
+npm run test:lpv2
 
-### Session Key Architecture
-
-```
-┌─ Browser ─────────────────────────────────────────────────────┐
-│  Generate 32-byte random session key                          │
-│  Define permissions based on risk profile                     │
-│  User signs delegation message                                │
-└────────────────────────────┬──────────────────────────────────┘
-                             │
-┌─ On-Chain (ERC-4337) ──────┼──────────────────────────────────┐
-│  Session key registered via Biconomy Smart Account             │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ ALLOWED:          │ BLOCKED:                             │  │
-│  │ • Venus mint()    │ • transfer() ❌                      │  │
-│  │ • Venus redeem()  │ • transferFrom() ❌                  │  │
-│  │ • PCS swap()      │ • approve() to unknown contracts ❌  │  │
-│  │ • Lista supply()  │ • Any non-whitelisted call ❌        │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│  Expiration: 7 days                                            │
-│  Rate limit: 10 tx/hour, 50 tx/day                             │
-└────────────────────────────────────────────────────────────────┘
+# Run all tests
+npm test
 ```
 
-### Risk Profiles
+## Documentation
 
-| Profile | Protocols | Tokens | Max Delegation | Slippage |
-|---------|-----------|--------|----------------|----------|
-| **Conservative** | Venus, Lista | USDT, USDC, BUSD | $5,000 | 0.5% |
-| **Balanced** | + PancakeSwap | + BNB, WBNB | $10,000 | 1.0% |
-| **Aggressive** | + Alpaca | + ETH, BTCB, CAKE | $50,000 | 2.0% |
+- **[Monte Carlo Simulation Guide](docs/MONTE_CARLO_GUIDE.md)** - Complete guide to probabilistic risk analysis
+- **[Historical Prices Guide](docs/HISTORICAL_PRICES_GUIDE.md)** - How to use historical price data for backtesting
+- **[On-Chain Calculator Guide](docs/GUIDE_CALCULATEUR_ONCHAIN.md)** - French guide for automated pool data fetching
+- **[Pool Data Parameters](POOL_DATA_EXOGENOUS_PARAMS.md)** - Explanation of all mathematical parameters
 
-### Agent Guardrails
+## Example Usage
 
-- Minimum APY improvement: **1%** before reallocation
-- Minimum holding period: **7 days**
-- Gas profitability: 7-day gain must exceed gas + 1% margin
-- AI temperature: **0.3** (conservative decision-making)
-- All operations logged for transparency
+### Calculate V_final with Historical Data
 
----
+```bash
+npm run calc:historical
+```
+
+**Interactive prompts:**
+1. Select a pool from top 20 by TVL
+2. Enter initial investment amount
+3. Enter investment period (days)
+4. System automatically fetches historical prices
+5. Calculates optimized V_final
+
+**Example output:**
+```
+Historical Price Analysis (90 days):
+  ETH: $3021.30 → $2011.68 (-33.42%)
+  BUSD: $0.9983 → $1.0007 (+0.24%)
+  
+📊 Calculated r = 0.664233
+📉 Historical IL = -2.06%
+
+💰 V_final = $9,456.23
+   Total return: -$543.77 (-5.44%)
+```
+
+### Monte Carlo Risk Analysis
+
+```bash
+npm run calc:montecarlo
+```
+
+**What it does:**
+- Fetches historical prices to estimate volatility (μ, σ)
+- Runs 1000 simulations with different price scenarios
+- Provides expected return, risk, and probability distribution
+
+**Example output:**
+```
+Distribution Parameters (from 90 days of ETH-BUSD):
+  Daily μ (drift):       -0.4560%
+  Daily σ (volatility):   3.90%
+  Annualized volatility:  74.57%
+
+MONTE CARLO RESULTS (1000 simulations):
+═══════════════════════════════════════════════════════════
+
+Expected Value (Mean):    $10,376
+Mean Return:              +$376 (+3.76%)
+Risk (Std Dev):           $429
+Probability of Loss:      16.0%
+
+Distribution:
+  5th percentile:         $9,525 (worst 5%)
+  Median:                 $10,516
+  95th percentile:        $10,757 (best 5%)
+
+⚠️ MODERATE RISK: 16% probability of loss
+```
+
+**Key insights:**
+- **Expected return**: $376 average across 1000 scenarios
+- **Risk**: $429 standard deviation (41% of mean return)
+- **Worst case (5%)**: Lose $475
+- **Best case (5%)**: Gain $757
+
+### Programmatic Usage
+
+**Historical Price Data:**
+```typescript
+import { getPriceRatioForPeriod } from './agents/skills/getPriceHistory.js';
+import { calculateOptimizedFinalValue } from './agents/skills/analyzePool-LPV2.js';
+
+// Get historical price ratio
+const priceData = await getPriceRatioForPeriod("ETH", "BUSD", 90);
+
+// Calculate final value
+const V_final = calculateOptimizedFinalValue(
+  {
+    V_initial: 10000,
+    days: 90,
+    r: priceData.priceRatio // From real historical data
+  },
+  poolExogenousParams
+);
+
+console.log(`Expected return: $${V_final.toFixed(2)}`);
+```
+
+**Monte Carlo Simulation:**
+```typescript
+import { 
+  monteCarloSimulation,
+  estimateLogReturnParameters,
+} from './agents/skills/analyzePool-LPV2.js';
+import { getPriceRatioTimeSeries } from './agents/skills/getPriceHistory.js';
+
+// 1. Get historical price ratios
+const priceRatios = await getPriceRatioTimeSeries('ETH', 'BUSD', 90);
+
+// 2. Estimate distribution parameters (μ, σ)
+const params = estimateLogReturnParameters(priceRatios);
+
+// 3. Run 1000 simulations
+const result = monteCarloSimulation(
+  { V_initial: 10000, days: 90 },
+  poolExogenousParams,
+  { mu: params.mu, sigma: params.sigma },
+  1000
+);
+
+// 4. Analyze results
+console.log(`Expected return: $${result.meanReturn.toFixed(2)}`);
+console.log(`Risk (std dev): $${result.stdDevReturn.toFixed(2)}`);
+console.log(`P(Loss): ${(result.probabilityOfLoss * 100).toFixed(1)}%`);
+console.log(`Worst case (5%): $${result.percentile5.toFixed(2)}`);
+console.log(`Best case (5%): $${result.percentile95.toFixed(2)}`);
+```
 
 ## Project Structure
 
 ```
 monorepo/
-├── landing/                   # Marketing landing page
-│   ├── app/                   # Next.js App Router
-│   │   ├── page.tsx          # Animated landing page
-│   │   ├── layout.tsx        # Root layout
-│   │   └── globals.css       # Styles + animations
-│   └── package.json
-│
-├── dashboard/                 # DeFi management dashboard
-│   ├── app/                   # Next.js App Router
-│   │   ├── page.tsx          # Dashboard page
-│   │   ├── api/              # API routes
-│   │   └── providers.tsx     # Wagmi + RainbowKit
-│   ├── components/            # UI components (shadcn/ui)
-│   ├── hooks/                 # useBiconomy, useSessionKey
-│   ├── lib/                   # Biconomy client, encryption
-│   └── package.json
-│
-├── agents/                    # Autonomous AI agent
-│   ├── start-agent.ts        # Entry point
-│   ├── index.ts              # Core agent logic
-│   ├── soul.md               # AI personality & guardrails
-│   ├── skills/               # Agent capabilities
-│   └── config.yaml           # Strategy configuration
-│
-├── contracts/                 # Smart contracts (Solidity)
-│   └── SessionValidator.sol
-│
-└── scripts/                   # Testing & deployment
+├── agents/
+│   ├── skills/
+│   │   ├── analyzePool-LPV2.ts       # Core LP calculation engine
+│   │   ├── getPriceHistory.ts        # Historical price retrieval
+│   │   ├── getPoolData.ts            # On-chain data fetcher
+│   │   ├── getPools.ts               # Pool discovery
+│   │   ├── execSwap.ts               # Trade execution
+│   │   └── analyzePool.ts            # Pool analysis
+│   ├── openclaw-runner.ts            # AI agent runner
+│   └── config.yaml                   # Agent configuration
+├── dashboard/                         # Next.js dashboard
+│   ├── components/
+│   │   ├── AgentDashboard.tsx        # Main dashboard
+│   │   ├── RiskSelector.tsx          # Risk profile selector
+│   │   └── WalletConnect.tsx         # Wallet integration
+│   └── hooks/
+│       ├── useBiconomy.ts            # Biconomy AA integration
+│       └── useSessionKey.ts          # Session key management
+├── scripts/
+│   ├── calculate-with-historical-prices.ts  # Interactive calculator with history
+│   ├── calculate-with-onchain-data.ts       # On-chain data calculator
+│   ├── test-price-history.ts                # Historical price tests
+│   └── debug-calculation.ts                  # Detailed breakdown
+├── docs/
+│   ├── HISTORICAL_PRICES_GUIDE.md    # Historical data guide
+│   └── GUIDE_CALCULATEUR_ONCHAIN.md  # French on-chain guide
+└── contracts/
+    └── SessionValidator.sol           # Session key validator
+
 ```
 
----
+## Core Formula
 
-## Built With
+The V_final calculation models an LP position as:
 
-<p>
-  <img src="https://img.shields.io/badge/BNB_Chain-F0B90B?style=for-the-badge&logo=binance&logoColor=white" />
-  <img src="https://img.shields.io/badge/Next.js-000000?style=for-the-badge&logo=nextdotjs&logoColor=white" />
-  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
-  <img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" />
-  <img src="https://img.shields.io/badge/OpenClaw-4B32C3?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Biconomy-FF4E17?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Claude_3.5-CC785C?style=for-the-badge&logo=anthropic&logoColor=white" />
-</p>
+```
+V_final = V_initial × IL_factor × (1 + r_harvest)^n - gas_costs
+```
 
----
+Where:
+- **IL_factor** = `(2√r) / (1+r)` - Impermanent loss multiplier
+- **r** = `P_final / P_initial` - Price ratio (from historical data or user input)
+- **r_harvest** = Trading fee APY + Farming APY (if staking pool exists)
+- **n** = Number of harvest periods
+- **gas_costs** = Total gas fees for harvesting
 
-## Team
+The system tests 10 harvest frequencies (1h to 168h) and selects the optimal one.
 
-**HashFox Labs**
+## API Integrations
 
----
+- **CoinGecko**: Historical price data for 20+ tokens
+- **DeFiLlama**: Pool TVL and volume data
+- **DexScreener**: Real-time pool metrics
+- **Owlracle**: BSC gas price estimates
+- **Biconomy**: Account abstraction and gasless transactions
+
+## Rate Limits
+
+⚠️ **CoinGecko Free Tier**: 10-12 requests/minute
+
+If you see rate limit errors:
+```
+⚠️ CoinGecko rate limit exceeded. Wait a few minutes or use API key.
+```
+
+**Solution**: Wait 60 seconds between test runs, or upgrade to CoinGecko Pro API.
+
+## Development
+
+```bash
+# Build TypeScript
+npm run build
+
+# Run agent in development mode
+npm run agent:dev
+
+# Start dashboard
+cd dashboard && npm run dev
+
+# Format code
+npm run format
+
+# Lint
+npm run lint
+```
+
+## Constants
+
+- **PancakeSwap Daily Emissions**: 14,500 CAKE/day (5,292,500/year)
+- **Trading Fee**: 0.17% (0.15% to LPs + 0.02% treasury)
+- **Network**: BNB Chain (BSC)
+
+## Testing
+
+Run comprehensive tests:
+
+```bash
+# All tests
+npm test
+
+# LP V2 analysis tests
+npm run test:lpv2
+
+# Historical price tests
+npm run test:pricehistory
+```
 
 ## License
 
 MIT
+
+## References
+
+- [PancakeSwap V2 Docs](https://docs.pancakeswap.finance/)
+- [Impermanent Loss Explained](https://finematics.com/impermanent-loss-explained/)
+- [Biconomy Account Abstraction](https://docs.biconomy.io/)
+- [CoinGecko API](https://www.coingecko.com/en/api/documentation)
