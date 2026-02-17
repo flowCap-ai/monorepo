@@ -13,6 +13,7 @@ import * as getPoolData from './skills/getPoolData';
 import * as analyzePool from './skills/analyzePool';
 import * as execSwap from './skills/execSwap';
 import * as getPools from './skills/getPools';
+import { notifyReallocation, notifyError, sendNotification } from './notifications';
 
 // Types
 interface AgentConfig {
@@ -128,10 +129,16 @@ export async function scanAndOptimize(): Promise<{
 
     console.log(`   Best opportunity: ${bestPool.protocol} ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY`);
 
-    // Check if we have existing positions to compare
+    // If no existing positions, first scan → pick the best pool and track it
     if (state.currentPositions.size === 0) {
-      console.log(`   No existing positions. Consider starting with ${bestPool.poolId}`);
-      return { action: 'none', details: `Best pool: ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY` };
+      console.log(`   No existing positions. Tracking best pool: ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY`);
+      state.currentPositions.set(bestPool.poolId, {
+        protocol: bestPool.protocol,
+        asset: bestPool.assets?.[0] || 'unknown',
+        apy: bestPool.apy,
+        entryDate: new Date(),
+      });
+      return { action: 'none', details: `Initial position tracked: ${bestPool.poolId} at ${bestPool.apy.toFixed(2)}% APY` };
     }
 
     // Check existing positions for reallocation opportunities
@@ -175,12 +182,62 @@ export async function scanAndOptimize(): Promise<{
       if (profitability.profitable) {
         console.log(`   💰 ${profitability.recommendation}`);
 
-        // TODO: Execute the reallocation using execSwap.executeReallocation
-        // For now, just return the recommendation
-        return {
-          action: 'none',
-          details: `Reallocation recommended: ${currentPool.name} → ${bestPool.poolId} (+${apyDifference.toFixed(2)}% APY)`,
-        };
+        // F1: Execute the reallocation
+        const bestPoolData = riskFilteredPools.find(p => p.poolId === bestPool.poolId);
+        if (!bestPoolData) {
+          return { action: 'none', details: 'Could not find best pool data for execution' };
+        }
+
+        try {
+          const reallocationResult = await execSwap.executeReallocation({
+            currentPool: currentPool as any,
+            currentAmount: '1000', // TODO: fetch actual position size
+            targetPool: bestPoolData as any,
+            smartAccountAddress: state.smartAccountAddress!,
+            slippageTolerance: config.riskProfiles[state.riskProfile].maxSlippage,
+          });
+
+          if (reallocationResult.success) {
+            // F3: Update tracked positions
+            state.currentPositions.delete(positionId);
+            state.currentPositions.set(bestPool.poolId, {
+              protocol: bestPool.protocol,
+              asset: bestPool.assets?.[0] || 'unknown',
+              apy: bestPool.apy,
+              entryDate: new Date(),
+            });
+
+            const txHash = reallocationResult.steps
+              .map(s => s.result.transactionHash)
+              .filter(Boolean)[0];
+
+            console.log(`   ✅ Reallocation executed: ${currentPool.name} → ${bestPool.poolId}`);
+
+            // F5: Telegram notification
+            await notifyReallocation(
+              currentPool.name,
+              bestPool.poolId,
+              apyDifference,
+              txHash
+            );
+
+            return {
+              action: 'reallocated' as const,
+              details: `Reallocated from ${currentPool.name} to ${bestPool.poolId} (+${apyDifference.toFixed(2)}% APY)`,
+              txHash: txHash,
+            };
+          } else {
+            console.error(`   ❌ Reallocation failed: ${reallocationResult.error}`);
+            return {
+              action: 'error' as const,
+              details: `Reallocation failed: ${reallocationResult.error}`,
+            };
+          }
+        } catch (execError) {
+          const msg = execError instanceof Error ? execError.message : 'Unknown execution error';
+          console.error(`   ❌ Execution error: ${msg}`);
+          return { action: 'error' as const, details: msg };
+        }
       } else {
         console.log(`   ⏳ ${profitability.recommendation}`);
       }
@@ -190,6 +247,7 @@ export async function scanAndOptimize(): Promise<{
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('❌ Error during scan:', errorMessage);
+    await notifyError('Scan Error', errorMessage);
     return { action: 'error', details: errorMessage };
   }
 }
@@ -209,12 +267,50 @@ export async function startAgent(): Promise<void> {
 
   state.isRunning = true;
 
-  while (state.isRunning) {
-    const result = await scanAndOptimize();
-    console.log(`   Result: ${result.action} - ${result.details}\n`);
+  // F5: Notify agent start
+  await sendNotification({
+    event: 'agent_started',
+    title: 'FlowCap Agent Started',
+    message: `Autonomous monitoring active for ${state.smartAccountAddress} (${state.riskProfile} risk).`,
+  });
 
-    // Wait for next check interval
-    await new Promise(resolve => setTimeout(resolve, config.strategy.checkInterval));
+  // F7: Graceful shutdown
+  const shutdown = () => {
+    console.log('\n🛑 Graceful shutdown requested...');
+    state.isRunning = false;
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  try {
+    while (state.isRunning) {
+      const result = await scanAndOptimize();
+      console.log(`   Result: ${result.action} - ${result.details}\n`);
+
+      // Wait for next check interval (interruptible)
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve, config.strategy.checkInterval);
+        // Allow early exit on stop
+        const check = () => {
+          if (!state.isRunning) {
+            clearTimeout(timer);
+            resolve(undefined);
+          } else {
+            setTimeout(check, 1000);
+          }
+        };
+        setTimeout(check, 1000);
+      });
+    }
+  } finally {
+    process.removeListener('SIGINT', shutdown);
+    process.removeListener('SIGTERM', shutdown);
+    await sendNotification({
+      event: 'agent_stopped',
+      title: 'FlowCap Agent Stopped',
+      message: 'Autonomous monitoring has been stopped.',
+    });
+    console.log('✅ Agent stopped cleanly.');
   }
 }
 

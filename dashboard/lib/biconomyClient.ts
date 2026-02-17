@@ -3,7 +3,20 @@
  * Handles smart account creation and session key delegation
  */
 
-import { type Address, type Hex, createPublicClient, http, createWalletClient, custom } from 'viem';
+import {
+  type Address,
+  type Hex,
+  createPublicClient,
+  http,
+  createWalletClient,
+  custom,
+  encodeFunctionData,
+  encodeAbiParameters,
+  parseAbiParameters,
+  keccak256,
+  toHex,
+  concat,
+} from 'viem';
 import { bsc } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
@@ -375,6 +388,7 @@ export async function delegateSessionKey(
       sessionValidAfter: BigInt(sessionKeyData.validAfter),
       // Encode permissions as session key data
       sessionKeyData: encodeSessionPermissions(sessionKeyData.permissions),
+      permissions: sessionKeyData.permissions,
     };
 
     // Create UserOperation to enable the session key
@@ -470,25 +484,77 @@ function encodeSessionPermissions(permissions: SessionKeyPermission[]): Hex {
   return encoded as Hex;
 }
 
+// ─── ABI fragments for on-chain calls ────────────────────────
+const SESSION_VALIDATOR_ABI = [
+  {
+    name: 'registerSessionKey',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'sessionKeyAddress', type: 'address' },
+      { name: 'validAfter', type: 'uint48' },
+      { name: 'validUntil', type: 'uint48' },
+      { name: 'totalValueLimit', type: 'uint256' },
+      { name: 'maxOpsPerHour_', type: 'uint16' },
+      { name: 'maxOpsPerDay_', type: 'uint16' },
+      {
+        name: 'perms',
+        type: 'tuple[]',
+        components: [
+          { name: 'target', type: 'address' },
+          { name: 'functionSelector', type: 'bytes4' },
+          { name: 'valueLimit', type: 'uint256' },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'revokeSessionKey',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'sessionKeyAddress', type: 'address' }],
+    outputs: [],
+  },
+] as const;
+
 /**
- * Encode the enableSessionKey function call
+ * Encode the enableSessionKey function call using proper ABI encoding.
+ * Generates calldata for SessionValidator.registerSessionKey().
  */
-function encodeEnableSessionKey(sessionModule: any): Hex {
-  // This is a simplified version - in production, use proper ABI encoding
-  // The actual implementation would use viem's encodeFunctionData
+function encodeEnableSessionKey(sessionModule: {
+  sessionKeyAddress: Address;
+  sessionValidUntil: bigint;
+  sessionValidAfter: bigint;
+  sessionKeyData: Hex;
+  permissions?: SessionKeyPermission[];
+}): Hex {
+  // Build permission tuples for the contract
+  const perms = (sessionModule.permissions || []).map((p) => ({
+    target: p.target,
+    functionSelector: p.functionSelector as `0x${string}`,
+    valueLimit: p.valueLimit,
+  }));
 
-  // For now, return a placeholder that logs the session data
-  console.log('Session module to enable:', sessionModule);
+  // Aggregate value limit across all permissions
+  const totalValueLimit = perms.reduce(
+    (sum, p) => (p.valueLimit > sum ? p.valueLimit : sum),
+    BigInt(0)
+  );
 
-  // In production, this would be:
-  // import { encodeFunctionData } from 'viem';
-  // return encodeFunctionData({
-  //   abi: SESSION_KEY_MANAGER_ABI,
-  //   functionName: 'enableSessionKey',
-  //   args: [sessionModule.sessionKeyAddress, sessionModule.sessionValidUntil, ...]
-  // });
-
-  return '0x' as Hex;
+  return encodeFunctionData({
+    abi: SESSION_VALIDATOR_ABI,
+    functionName: 'registerSessionKey',
+    args: [
+      sessionModule.sessionKeyAddress,
+      Number(sessionModule.sessionValidAfter),  // uint48
+      Number(sessionModule.sessionValidUntil),  // uint48
+      totalValueLimit,
+      30,  // maxOpsPerHour
+      200, // maxOpsPerDay
+      perms,
+    ],
+  });
 }
 
 /**
@@ -627,24 +693,45 @@ export async function executeSwapWithSessionKey(
   };
 }
 
+// ─── PancakeSwap Router ABI fragment ─────────────────────────
+const PANCAKESWAP_ROUTER_ABI = [
+  {
+    name: 'swapExactTokensForTokens',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'amountIn', type: 'uint256' },
+      { name: 'amountOutMin', type: 'uint256' },
+      { name: 'path', type: 'address[]' },
+      { name: 'to', type: 'address' },
+      { name: 'deadline', type: 'uint256' },
+    ],
+    outputs: [{ name: 'amounts', type: 'uint256[]' }],
+  },
+] as const;
+
 /**
- * Encode swap calldata for PancakeSwap
+ * Encode swap calldata for PancakeSwap using proper ABI encoding.
  */
 function encodeSwapCalldata(params: {
   tokenIn: Address;
   tokenOut: Address;
   amountIn: bigint;
   minAmountOut: bigint;
+  recipient?: Address;
 }): Hex {
-  // In production, use viem's encodeFunctionData:
-  //
-  // import { encodeFunctionData } from 'viem';
-  // return encodeFunctionData({
-  //   abi: PANCAKESWAP_ROUTER_ABI,
-  //   functionName: 'swapExactTokensForTokens',
-  //   args: [amountIn, minAmountOut, [tokenIn, tokenOut], smartAccountAddress, deadline]
-  // });
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200); // 20 min
+  const recipient = params.recipient || '0x0000000000000000000000000000000000000000' as Address;
 
-  console.log('Encoding swap:', params);
-  return '0x38ed1739' as Hex; // swapExactTokensForTokens selector
+  return encodeFunctionData({
+    abi: PANCAKESWAP_ROUTER_ABI,
+    functionName: 'swapExactTokensForTokens',
+    args: [
+      params.amountIn,
+      params.minAmountOut,
+      [params.tokenIn, params.tokenOut],
+      recipient,
+      deadline,
+    ],
+  });
 }

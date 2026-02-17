@@ -175,6 +175,14 @@ export class SessionKeyManager {
   private walletClient;
   private sessionAccount: Account | null = null;
 
+  /**
+   * Fixed timestamps — computed ONCE at construction and never recalculated.
+   * This is the fix for the bug where validUntil was recomputed as `now + validity`
+   * on every call to getSessionKeyData(), meaning the session could never expire.
+   */
+  private readonly validAfter: number;
+  private readonly validUntil: number;
+
   constructor(
     private config: SessionKeyConfig
   ) {
@@ -182,6 +190,12 @@ export class SessionKeyManager {
       chain: bsc,
       transport: http(process.env.BNB_RPC_URL || 'https://bsc-dataseed1.binance.org'),
     });
+
+    // Compute validity window ONCE
+    const validityDuration = this.config.validityDurationSeconds || 7 * 24 * 60 * 60; // 7 days
+    const now = Math.floor(Date.now() / 1000);
+    this.validAfter = now;
+    this.validUntil = now + validityDuration;
 
     // Initialize session account if private key provided
     if (config.sessionPrivateKey) {
@@ -195,20 +209,18 @@ export class SessionKeyManager {
   }
 
   /**
-   * Get session key data
+   * Get session key data.
+   * validAfter / validUntil are fixed at construction — they do NOT recalculate.
    */
   getSessionKeyData(): SessionKeyData | null {
     if (!this.sessionAccount) {
       return null;
     }
 
-    const validityDuration = this.config.validityDurationSeconds || 7 * 24 * 60 * 60; // 7 days
-    const now = Math.floor(Date.now() / 1000);
-
     return {
       sessionKeyAddress: this.sessionAccount.address,
-      validUntil: now + validityDuration,
-      validAfter: now,
+      validUntil: this.validUntil,
+      validAfter: this.validAfter,
       permissions: this.config.permissions || buildFlowCapPermissions(),
       enabled: true,
     };
@@ -354,11 +366,11 @@ export function validateSessionKeyConfig(): {
     errors.push('AGENT_WALLET_ADDRESS not configured');
   }
 
-  if (!process.env.BICONOMY_BUNDLER_URL || !process.env.BICONOMY_BUNDLER_URL.includes('YOUR')) {
+  if (!process.env.BICONOMY_BUNDLER_URL || process.env.BICONOMY_BUNDLER_URL.includes('YOUR')) {
     warnings.push('BICONOMY_BUNDLER_URL not properly configured');
   }
 
-  if (!process.env.BICONOMY_PAYMASTER_URL || !process.env.BICONOMY_PAYMASTER_URL.includes('YOUR')) {
+  if (!process.env.BICONOMY_PAYMASTER_URL || process.env.BICONOMY_PAYMASTER_URL.includes('YOUR')) {
     warnings.push('BICONOMY_PAYMASTER_URL not properly configured');
   }
 
