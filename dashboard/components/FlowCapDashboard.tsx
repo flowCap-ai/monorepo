@@ -223,9 +223,10 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
       localStorage.setItem('flowcap-risk-profile', riskProfile);
       localStorage.setItem('flowcap-max-investment', maxInvestment);
       localStorage.setItem('flowcap-delegated', 'true');
-      if (delegationResult.txHash) {
-        localStorage.setItem('flowcap-delegation-tx', delegationResult.txHash);
-        setDelegationTxHash(delegationResult.txHash);
+      const displayId = delegationResult.sessionId ?? delegationResult.txHash ?? null;
+      if (displayId) {
+        localStorage.setItem('flowcap-delegation-tx', displayId);
+        setDelegationTxHash(displayId);
       }
 
       setIsDelegated(true);
@@ -327,20 +328,24 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
             <div className="p-3 rounded-lg bg-surface border border-[var(--border)] mb-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 <Hash className="w-3.5 h-3.5 text-orange-400/60 shrink-0" />
-                <span className="text-[11px] text-zinc-500 uppercase tracking-wider shrink-0">Session Tx</span>
+                <span className="text-[11px] text-zinc-500 uppercase tracking-wider shrink-0">
+                  {delegationTxHash.startsWith('0x') && delegationTxHash.length === 66 ? 'Session Tx' : 'Session ID'}
+                </span>
                 <span className="text-xs font-mono text-zinc-400 truncate">
                   {delegationTxHash.slice(0, 10)}…{delegationTxHash.slice(-8)}
                 </span>
               </div>
-              <a
-                href={`https://bscscan.com/tx/${delegationTxHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[11px] text-orange-400/70 hover:text-orange-400 transition-colors shrink-0"
-              >
-                BscScan
-                <ExternalLink className="w-3 h-3" />
-              </a>
+              {delegationTxHash.startsWith('0x') && delegationTxHash.length === 66 && (
+                <a
+                  href={`https://bscscan.com/tx/${delegationTxHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-[11px] text-orange-400/70 hover:text-orange-400 transition-colors shrink-0"
+                >
+                  BscScan
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </div>
           )}
 

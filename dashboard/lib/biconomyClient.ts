@@ -229,7 +229,7 @@ export async function delegateSessionKey(
   ownerAddress: Address,
   smartAccountAddress: Address,
   sessionKeyData: SessionKeyData,
-): Promise<{ success: boolean; compressedSessionData?: string; txHash?: string; error?: string }> {
+): Promise<{ success: boolean; compressedSessionData?: string; txHash?: string; sessionId?: string; error?: string }> {
   try {
     const nexusAccount = await buildNexusAccount(ownerAddress);
 
@@ -274,9 +274,16 @@ export async function delegateSessionKey(
       riskProfile:    sessionKeyData.riskProfile,
       validAfter:     sessionKeyData.validAfter,
       validUntil:     sessionKeyData.validUntil,
-    });
+    }, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
 
-    return { success: true, compressedSessionData };
+    // Extract a displayable session ID from sessionDetails
+    const sessionId: string | undefined =
+      (sessionDetails as any)?.permissionId ??
+      (sessionDetails as any)?.sessionId ??
+      (sessionDetails as any)?.id ??
+      undefined;
+
+    return { success: true, compressedSessionData, sessionId };
 
   } catch (error: any) {
     console.error('❌ delegateSessionKey failed:', error);
