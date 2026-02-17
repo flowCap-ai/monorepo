@@ -42,7 +42,7 @@ export class ServiceWorkerManager {
    * Check if service worker is registered and active
    */
   isActive(): boolean {
-    return this.registration?.active !== null;
+    return this.registration != null && this.registration.active != null;
   }
 
   /**
@@ -78,7 +78,14 @@ export class ServiceWorkerManager {
     return new Promise((resolve, reject) => {
       const messageChannel = new MessageChannel();
 
+      // Timeout after 30 seconds
+      const timer = setTimeout(() => {
+        messageChannel.port1.onmessage = null;
+        reject(new Error('Service Worker message timeout'));
+      }, 30000);
+
       messageChannel.port1.onmessage = (event) => {
+        clearTimeout(timer);
         if (event.data.error) {
           reject(new Error(event.data.error));
         } else {
@@ -90,11 +97,6 @@ export class ServiceWorkerManager {
         { type, data },
         [messageChannel.port2]
       );
-
-      // Timeout after 30 seconds
-      setTimeout(() => {
-        reject(new Error('Service Worker message timeout'));
-      }, 30000);
     });
   }
 

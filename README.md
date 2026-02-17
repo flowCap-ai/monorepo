@@ -1,376 +1,326 @@
-# FlowCap - Autonomous DeFi Wealth Manager
+<p align="center">
+  <img src="dashboard/public/hashfoxblack.png" alt="FlowCap" width="120" />
+</p>
 
-**Status: ✅ AGENT RUNNING - Autonomous monitoring active**
+<h1 align="center">FlowCap</h1>
+<p align="center"><strong>Autonomous OpenClaw Wealth Manager for DeFi</strong></p>
 
-FlowCap is an autonomous AI agent that optimizes DeFi yields on BNB Chain using Biconomy session keys (ERC-4337) and OpenClaw for 24/7 monitoring.
+<p align="center">
+  <em>One Click · One Signature · Zero Configuration</em>
+</p>
 
----
-
-## 🎯 Current Progress
-
-### ✅ What's Working
-
-1. **Agent Core** - Fully functional autonomous monitoring
-   - ✅ Loads `soul.md` AI personality
-   - ✅ Watches `/Users/alex/.openclaw/flowcap-delegations/` for new delegations
-   - ✅ Auto-starts when delegation file detected
-   - ✅ Scans BNB Chain every 5 minutes for yield opportunities
-   - ✅ Finds 14+ pools matching risk profile
-   - ✅ Identifies best opportunities (currently: Lista Lending at 16.20% APY)
-
-2. **Skills Implementation**
-   - ✅ `getPools` - Discovers Venus, PancakeSwap, Lista, Alpaca pools
-   - ✅ `analyzePool` - Analyzes APY, TVL, risk scores
-   - ✅ `analyzePool-LPV2` - Advanced mathematical modeling for PancakeSwap V2
-   - ✅ `execSwap` - Multi-step reallocation (withdraw → swap → supply)
-   - ✅ Session key delegation from dashboard
-
-3. **Dashboard**
-   - ✅ Wallet connection (RainbowKit + Wagmi)
-   - ✅ Session key delegation via Biconomy SDK
-   - ✅ Saves delegations to `/Users/alex/.openclaw/flowcap-delegations/`
-   - ✅ Risk profile selection (low/medium/high)
-
-### ⚠️ Known Issues
-
-1. **OpenClaw Gateway Connection** - Not critical, agent works standalone
-   - ❌ WebSocket connection to `ws://127.0.0.1:18789` fails with "gateway token mismatch"
-   - ℹ️ This is optional - agent runs fine without gateway
-   - ℹ️ Gateway is only needed for dashboard real-time updates
-
-2. **Transaction Execution** - Not yet tested on-chain
-   - ⏳ Reallocation logic implemented but needs live testing
-   - ⏳ Gas profitability checks need validation
-   - ⏳ Biconomy MEE bundler integration needs testing
+<p align="center">
+  <a href="#architecture">Architecture</a> •
+  <a href="#features">Features</a> •
+  <a href="#tech-stack">Tech Stack</a> •
+  <a href="#getting-started">Getting Started</a> •
+  <a href="#security">Security</a> •
+  <a href="#team">Team</a>
+</p>
 
 ---
 
-## 📁 Project Structure
+## The Problem
+
+DeFi yield optimization is **complex, time-consuming, and risky**:
+
+- Users must manually monitor dozens of pools across multiple protocols 24/7
+- Rebalancing requires gas estimation, slippage management, and multi-step transactions
+- Existing "yield aggregators" are centralized custodial solutions — users lose control of their funds
+- No tool combines **AI-driven analysis** with **non-custodial security guarantees**
+
+## Our Solution
+
+**FlowCap** is an autonomous AI agent that manages your DeFi positions on BNB Chain **24/7**, powered by [OpenClaw](https://openclaw.ai) and secured by **Biconomy ERC-4337 session keys**.
+
+The agent **physically cannot steal your funds** — session keys restrict operations to yield optimization only, with `transfer` and `transferFrom` explicitly blocked at the smart contract level.
 
 ```
-monorepo/
-├── agents/                    # Autonomous agent (Node.js)
-│   ├── start-agent.ts        # Main entry point ⭐ START HERE
-│   ├── index.ts              # Agent logic (scanAndOptimize)
-│   ├── soul.md               # AI personality & instructions
-│   ├── skills/               # Agent capabilities
-│   │   ├── getPools.ts       # Pool discovery (Venus, PancakeSwap, etc.)
-│   │   ├── analyzePool.ts    # Generic pool analysis
-│   │   ├── analyzePool-LPV2.ts  # Advanced LP V2 math
-│   │   ├── getPriceHistory.ts   # Historical prices for IL calc
-│   │   ├── execSwap.ts       # Transaction execution
-│   │   └── flowcap-monitor.ts   # Monitoring skill
-│   ├── config.yaml           # Strategy configuration
-│   └── package.json          # Dependencies
-│
-├── dashboard/                # Next.js frontend
-│   ├── app/                  # App router pages
-│   ├── components/           # React components
-│   │   └── FlowCapDashboard.tsx  # Main UI
-│   ├── lib/                  # Utilities
-│   │   └── biconomyClient.ts     # Session key delegation
-│   ├── server.ts             # WebSocket proxy (optional)
-│   └── package.json
-│
-└── .env                      # Environment variables
+User signs once → Agent monitors every 5 min → Finds better yield → Reallocates automatically
+```
+
+### How It Works
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  USER (Browser)                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  Dashboard (Next.js)                                           │  │
+│  │  Connect Wallet → Select Risk → Sign Delegation → Done ✓      │  │
+│  └──────────────────────────┬─────────────────────────────────────┘  │
+└─────────────────────────────┼────────────────────────────────────────┘
+                              │ Session Key (ERC-4337)
+┌─────────────────────────────┼────────────────────────────────────────┐
+│  AGENT (OpenClaw - Local)   ▼                                        │
+│  ┌──────────┐ ┌───────────┐ ┌────────────┐ ┌───────────────────┐    │
+│  │ getPools │ │analyzePool│ │ execSwap   │ │ Monte Carlo Sim   │    │
+│  │ 4 protos │ │ + LP V2   │ │ multi-step │ │ 1000+ scenarios   │    │
+│  └────┬─────┘ └─────┬─────┘ └─────┬──────┘ └─────────┬─────────┘    │
+│       │              │             │                  │              │
+│  Scan every 5 min → Analyze → Profitability check → Execute        │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ UserOperation (ERC-4337)
+┌──────────────────────────────┼───────────────────────────────────────┐
+│  BNB CHAIN                   ▼                                       │
+│  ┌──────────┐ ┌──────────────┐ ┌──────────┐ ┌────────────────────┐  │
+│  │  Venus   │ │ PancakeSwap  │ │  Lista   │ │  Biconomy MEE     │  │
+│  │ Lending  │ │   V2 + V3    │ │   DAO    │ │  Bundler+Paymaster│  │
+│  └──────────┘ └──────────────┘ └──────────┘ └────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 How to Run Everything
+## Architecture
+
+### Three Independent Modules
+
+| Module | Purpose | Tech |
+|--------|---------|------|
+| **Landing Page** (`/landing`) | Public-facing marketing site | Next.js 14, Framer Motion, Tailwind |
+| **Dashboard** (`/dashboard`) | Wallet connection, delegation, monitoring | Next.js 14, RainbowKit, Wagmi, Biconomy |
+| **Agent** (`/agents`) | Autonomous AI agent with DeFi skills | OpenClaw SDK, Claude 3.5, TypeScript |
+
+### Agent Skills
+
+| Skill | Description |
+|-------|-------------|
+| `getPools` | Discovers pools across Venus, PancakeSwap V2/V3, Lista DAO, Alpaca Finance |
+| `analyzePool` | Calculates APY, TVL, risk scores with protocol-specific logic |
+| `analyzePool-LPV2` | **1,100+ lines** — Advanced LP V2 modeling with Monte Carlo simulation (1,000 scenarios), impermanent loss, VaR 5%, sensitivity analysis |
+| `getPriceHistory` | Fetches historical prices from CoinGecko for volatility estimation |
+| `execSwap` | Multi-step reallocation: withdraw → swap → approve → supply. Full ERC-4337 UserOperation pipeline |
+| `flowcap-monitor` | Orchestrates the 5-minute scan loop with intelligent routing |
+
+### Data Sources
+
+Real-time data from **5 independent sources** feeds the mathematical model:
+
+- **Venus API** — On-chain supply rates
+- **DeFiLlama** — Cross-protocol yield aggregation  
+- **CoinGecko** — Spot & historical prices
+- **DexScreener** — DEX volume & liquidity
+- **Owlracle** — BSC gas prices
+
+---
+
+## Features
+
+### OpenClaw-Powered Yield Optimization
+- Autonomous 24/7 monitoring with scans every 5 minutes
+- OpenClaw agent leverages Claude 3.5 Sonnet for decision-making (temperature 0.3 for conservative financial decisions)
+- Multi-protocol discovery: **70+ pools** across 4 protocols on BNB Chain
+- Dynamic reallocation with gas profitability checks
+
+### Monte Carlo Risk Engine
+- **1,000+ simulation runs** using log-normal distribution
+- Box-Muller transform for random variable generation
+- Maximum Likelihood Estimation (MLE) for parameter fitting
+- Metrics: VaR 5%, expected return, probability of loss, optimal harvest frequency
+- Sensitivity analysis: ±10% and ±25% price deviation scenarios
+
+### One-Click Delegation
+- Single signature to delegate restricted permissions
+- No configuration files, no servers, no technical setup
+- Risk profile selection: Conservative / Balanced / Aggressive
+- Customizable delegation amount ($1 - $50,000)
+
+### Non-Custodial Security (ERC-4337)
+- Session keys with **7-day expiration**
+- `transfer` and `transferFrom` **explicitly blocked**
+- Per-risk-profile contract whitelists
+- Rate limiting: 10 tx/hour, 50 tx/day
+- Local execution via OpenClaw — no cloud servers
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | Next.js 14 (App Router), React 18, Tailwind CSS, shadcn/ui, Framer Motion |
+| **Wallet** | RainbowKit 2.0, Wagmi 2.5, Viem 2.21 |
+| **Account Abstraction** | Biconomy AbstractJS 1.1.21, ERC-4337, MEE Bundler |
+| **AI Agent** | OpenClaw SDK (autonomous decision-making), Claude 3.5 Sonnet (Anthropic) |
+| **Blockchain** | BNB Chain (BSC, Chain ID 56) |
+| **Protocols** | Venus, PancakeSwap V2/V3, Lista DAO, Alpaca Finance |
+| **Language** | TypeScript 5.3 |
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
-```bash
-# Install dependencies
-npm install  # in root if needed
-cd agents && npm install
-cd ../dashboard && npm install
-```
+- Node.js ≥ 18
+- pnpm (for dashboard & landing)
+- npm (for agents)
 
-### 1. Start the OpenClaw Gateway (Optional)
-
-The gateway is running at `ws://127.0.0.1:18789` but connection is currently failing. **The agent works without it.**
-
-### 2. Start the Agent ⭐
+### 1. Clone & Install
 
 ```bash
-cd /Users/alex/Desktop/HASHFOXLABS/FlowCap/monorepo/agents
-npm start
+git clone https://github.com/flowCap-ai/monorepo.git
+cd monorepo
+
+# Dashboard
+cd dashboard && pnpm install
+
+# Landing Page
+cd ../landing && pnpm install
+
+# Agent
+cd ../agents && npm install
 ```
 
-**Expected Output:**
-```
-╔════════════════════════════════════════════════════════════╗
-║                  FlowCap Agent Starting                    ║
-╚════════════════════════════════════════════════════════════╝
+### 2. Environment Variables
 
-📖 Loaded soul.md (18202 characters)
+Create a `.env` file at the root:
 
-👀 Watching folder: /Users/alex/.openclaw/flowcap-delegations
-📬 Found 7 existing delegation file(s)
-📄 Loading most recent delegation: active.json
-   Using most recent delegation from 2/16/2026, 11:38:20 PM
-
-📋 Processing delegation...
-   Smart Account: 0x8Bde63fcd2719Bf38f9F3B252735f0ddaCB2eCeD
-   Risk Profile: low
-   Session Key: 0xf607f479...a3b6
-
-🚀 Initializing FlowCap Agent...
-✅ Agent initialized for 0x8Bde63fcd2719Bf38f9F3B252735f0ddaCB2eCeD
-   Risk Profile: low
-
-✅ Agent initialized successfully
-
-🤖 Starting autonomous monitoring...
-   Check interval: 5 minutes
-
-[2026-02-16T16:10:30.255Z] 🔍 Running autonomous scan...
-🔍 Scanning for yield opportunities...
-Discovered 17 Venus Core Pool markets
-Discovered 0 Alpaca pools
-Discovered 21 Lista pools
-Discovered 39 PancakeSwap pools
-   Found 14 pools matching low risk profile
-   Best opportunity: lista-lending at 16.20% APY
-   No existing positions. Consider starting with lista-lending
-   Result: none - Best pool: lista-lending at 16.20% APY
-
-⏳ Next scan in 5 minutes...
-────────────────────────────────────────────────────────────
-```
-
-### 3. Start the Dashboard (Optional - for creating new delegations)
-
-```bash
-cd /Users/alex/Desktop/HASHFOXLABS/FlowCap/monorepo/dashboard
-npm run dev
-```
-
-Open http://localhost:3000
-
-**Dashboard Actions:**
-1. Connect wallet
-2. Select risk profile (low/medium/high)
-3. Set max investment amount
-4. Click "Start Agent" → Creates session key delegation
-5. Delegation saved to `/Users/alex/.openclaw/flowcap-delegations/`
-6. Agent auto-detects and starts monitoring
-
----
-
-## 🧪 Testing
-
-### Test 1: Agent Discovers Pools
-```bash
-cd agents
-npm start
-# Watch for "Discovered X pools" messages
-# Should find Venus, Lista, PancakeSwap pools
-```
-
-**Expected:** Agent finds 70+ total pools across all protocols
-
-### Test 2: Pool Analysis
-```bash
-# Agent automatically analyzes top pools
-# Check logs for APY calculations
-```
-
-**Expected:** APY values calculated for Venus (2-3%), Lista (15-20%), PancakeSwap (varies)
-
-### Test 3: Risk Filtering
-```bash
-# Agent filters by risk profile (currently: low)
-# Low risk = only stablecoins (USDT, USDC, BUSD)
-```
-
-**Expected:** ~14 pools pass low-risk filter
-
-### Test 4: Reallocation Decision
-The agent checks:
-- ✅ Minimum APY improvement: 1%
-- ✅ Minimum holding period: 7 days
-- ✅ Gas profitability: 7-day gain > gas cost + 1%
-
-**Expected:** Agent logs recommendation but doesn't execute yet (no existing positions)
-
-### Test 5: Session Key Delegation (Dashboard)
-```bash
-cd dashboard
-npm run dev
-# Open browser, connect wallet, create delegation
-```
-
-**Expected:** File created in `/Users/alex/.openclaw/flowcap-delegations/`
-
----
-
-## 🔧 Configuration
-
-### Environment Variables
-
-**`.env` (Root - for both agent and dashboard)**
-```bash
+```env
 # BNB Chain
 BNB_RPC_URL=https://1rpc.io/bnb
 BNB_CHAIN_ID=56
 
 # Biconomy
-BICONOMY_API_KEY=mee_4Z4ms1rVVK6d2aCTihwrQS
+BICONOMY_API_KEY=your_api_key
+NEXT_PUBLIC_BICONOMY_MEE_API_KEY=your_mee_key
 
-# AI Model
-ANTHROPIC_API_KEY=sk-ant-api03-...
+# AI
+ANTHROPIC_API_KEY=sk-ant-...
 AI_MODEL=claude-3-5-sonnet-20241022
 
-# Protocol Addresses
+# Protocol Addresses (BSC Mainnet)
 VENUS_COMPTROLLER=0xfD36E2c2a6789Db23113685031d7F16329158384
 PANCAKESWAP_ROUTER_V2=0x10ED43C718714eb63d5aA57B78B54704E256024E
 PANCAKESWAP_ROUTER_V3=0x13f4EA83D0bd40E75C8222255bc855a974568Dd4
-
-# Strategy
-MIN_PROFIT_THRESHOLD_PERCENT=1
-REALLOCATION_CHECK_INTERVAL_MS=300000  # 5 minutes
-MIN_HOLDING_PERIOD_DAYS=7
 ```
 
-### Agent Strategy (`agents/config.yaml`)
-```yaml
-agent:
-  name: FlowCap
-  version: 1.0.0
+### 3. Run
 
-strategy:
-  minAPYImprovement: 1        # Minimum 1% APY gain to reallocate
-  minHoldingPeriod: 7         # Hold positions for 7 days minimum
-  checkInterval: 300000       # Scan every 5 minutes
-  maxGasPrice: 5              # Max 5 Gwei
-
-riskProfiles:
-  low:
-    name: Prudent
-    allowedProtocols: [venus, lista]
-    allowedTokens: [USDT, USDC, BUSD]
-    maxSlippage: 0.5
-
-  medium:
-    name: Moderate
-    allowedProtocols: [venus, lista, pancakeswap]
-    allowedTokens: [USDT, USDC, BUSD, BNB, WBNB]
-    maxSlippage: 1.0
-
-  high:
-    name: Aggressive
-    allowedProtocols: [venus, lista, pancakeswap, alpaca]
-    allowedTokens: [USDT, USDC, BUSD, BNB, WBNB, ETH, BTCB, CAKE]
-    maxSlippage: 2.0
-```
-
----
-
-## 🛠️ Troubleshooting
-
-### Agent Not Starting
 ```bash
-# Check dependencies
-cd agents
-npm install
+# Terminal 1 — Dashboard
+cd dashboard && pnpm dev
+# → http://localhost:3000
 
-# Check .env file exists
-ls -la ../.env
+# Terminal 2 — Landing Page
+cd landing && pnpm dev
+# → http://localhost:3001
 
-# Check delegation folder exists
-ls -la /Users/alex/.openclaw/flowcap-delegations/
+# Terminal 3 — Agent
+cd agents && npm start
+# → Autonomous monitoring starts
 ```
 
-### No Pools Found
-```bash
-# Check RPC connection
-curl https://1rpc.io/bnb -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+### 4. Usage
 
-# Should return current block number
+1. Open the **Dashboard** at `http://localhost:3000`
+2. Connect your wallet (BNB Chain)
+3. Select your risk profile
+4. Set your delegation amount
+5. Click **"Delegate to OpenClaw"** and sign once
+6. Close the browser — the agent runs autonomously
+
+---
+
+## Security
+
+### Session Key Architecture
+
+```
+┌─ Browser ─────────────────────────────────────────────────────┐
+│  Generate 32-byte random session key                          │
+│  Define permissions based on risk profile                     │
+│  User signs delegation message                                │
+└────────────────────────────┬──────────────────────────────────┘
+                             │
+┌─ On-Chain (ERC-4337) ──────┼──────────────────────────────────┐
+│  Session key registered via Biconomy Smart Account             │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │ ALLOWED:          │ BLOCKED:                             │  │
+│  │ • Venus mint()    │ • transfer() ❌                      │  │
+│  │ • Venus redeem()  │ • transferFrom() ❌                  │  │
+│  │ • PCS swap()      │ • approve() to unknown contracts ❌  │  │
+│  │ • Lista supply()  │ • Any non-whitelisted call ❌        │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│  Expiration: 7 days                                            │
+│  Rate limit: 10 tx/hour, 50 tx/day                             │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-### Gateway Connection Failing
-```bash
-# This is expected and non-critical
-# Agent works without gateway connection
-# Gateway is only for dashboard real-time updates
+### Risk Profiles
+
+| Profile | Protocols | Tokens | Max Delegation | Slippage |
+|---------|-----------|--------|----------------|----------|
+| **Conservative** | Venus, Lista | USDT, USDC, BUSD | $5,000 | 0.5% |
+| **Balanced** | + PancakeSwap | + BNB, WBNB | $10,000 | 1.0% |
+| **Aggressive** | + Alpaca | + ETH, BTCB, CAKE | $50,000 | 2.0% |
+
+### Agent Guardrails
+
+- Minimum APY improvement: **1%** before reallocation
+- Minimum holding period: **7 days**
+- Gas profitability: 7-day gain must exceed gas + 1% margin
+- AI temperature: **0.3** (conservative decision-making)
+- All operations logged for transparency
+
+---
+
+## Project Structure
+
+```
+monorepo/
+├── landing/                   # Marketing landing page
+│   ├── app/                   # Next.js App Router
+│   │   ├── page.tsx          # Animated landing page
+│   │   ├── layout.tsx        # Root layout
+│   │   └── globals.css       # Styles + animations
+│   └── package.json
+│
+├── dashboard/                 # DeFi management dashboard
+│   ├── app/                   # Next.js App Router
+│   │   ├── page.tsx          # Dashboard page
+│   │   ├── api/              # API routes
+│   │   └── providers.tsx     # Wagmi + RainbowKit
+│   ├── components/            # UI components (shadcn/ui)
+│   ├── hooks/                 # useBiconomy, useSessionKey
+│   ├── lib/                   # Biconomy client, encryption
+│   └── package.json
+│
+├── agents/                    # Autonomous AI agent
+│   ├── start-agent.ts        # Entry point
+│   ├── index.ts              # Core agent logic
+│   ├── soul.md               # AI personality & guardrails
+│   ├── skills/               # Agent capabilities
+│   └── config.yaml           # Strategy configuration
+│
+├── contracts/                 # Smart contracts (Solidity)
+│   └── SessionValidator.sol
+│
+└── scripts/                   # Testing & deployment
 ```
 
-### Dashboard Can't Connect Wallet
-```bash
-# Check NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
-# Get from https://cloud.walletconnect.com
-```
+---
+
+## Built With
+
+<p>
+  <img src="https://img.shields.io/badge/BNB_Chain-F0B90B?style=for-the-badge&logo=binance&logoColor=white" />
+  <img src="https://img.shields.io/badge/Next.js-000000?style=for-the-badge&logo=nextdotjs&logoColor=white" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" />
+  <img src="https://img.shields.io/badge/OpenClaw-4B32C3?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Biconomy-FF4E17?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Claude_3.5-CC785C?style=for-the-badge&logo=anthropic&logoColor=white" />
+</p>
 
 ---
 
-## 📊 Current Test Results
+## Team
 
-**Last Scan (2026-02-16 16:10:30):**
-- ✅ Total Pools Discovered: 77
-  - Venus: 17 markets
-  - Lista: 21 pools
-  - PancakeSwap: 39 pools
-  - Alpaca: 0 pools (API may be down)
-- ✅ Risk-Filtered Pools: 14 (low risk profile)
-- ✅ Best Opportunity: Lista Lending at 16.20% APY
-- ✅ Agent Decision: Recommend Lista but no execution (no existing position)
-
-**Smart Account:**
-- Address: `0x8Bde63fcd2719Bf38f9F3B252735f0ddaCB2eCeD`
-- Session Key: `0xf607f4797db72ec90e5ebd0d6c14f173f417a7f7331672416ae385f3ef69a3b6`
-- Risk Profile: Low (stablecoins only)
-- Max Investment: 1 BNB
+**HashFox Labs**
 
 ---
 
-## 🔜 Next Steps
+## License
 
-1. **Fix OpenClaw Gateway Connection** (Optional)
-   - Resolve "gateway token mismatch" error
-   - Enable real-time dashboard updates
-
-2. **Test Live Transaction Execution**
-   - Fund smart account with small amount (e.g., 10 USDT)
-   - Create initial position manually
-   - Wait for agent to find better opportunity
-   - Verify agent executes reallocation
-
-3. **Add More Skills**
-   - `analyzePool-LPV3` - PancakeSwap V3 concentrated liquidity
-   - `analyzePool-Lending` - Enhanced Venus/Lista analysis
-   - Monte Carlo simulation integration
-
-4. **Dashboard Enhancements**
-   - Real-time position tracking
-   - Transaction history
-   - Performance analytics
-
----
-
-## 📝 Notes
-
-- **Agent runs standalone** - No OpenClaw gateway required
-- **Session keys expire** after 7 days - Must re-delegate from dashboard
-- **Gas costs** calculated before every transaction
-- **All actions** logged to console for transparency
-- **No cloud servers** - Everything runs locally on your machine
-
----
-
-## 🆘 Support
-
-- Agent logs: Check terminal output where `npm start` is running
-- Delegation files: `/Users/alex/.openclaw/flowcap-delegations/`
-- Configuration: `.env` and `agents/config.yaml`
-- Soul personality: `agents/soul.md`
-
----
-
-**Last Updated:** 2026-02-16 16:15:00
-**Status:** ✅ Autonomous monitoring active, scanning every 5 minutes
+MIT

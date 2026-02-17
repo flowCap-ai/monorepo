@@ -1,10 +1,13 @@
 import type { Metadata } from 'next';
+import { Inter } from 'next/font/google';
 import './globals.css';
 import { WagmiProviders } from './providers';
 
+const inter = Inter({ subsets: ['latin'] });
+
 export const metadata: Metadata = {
-  title: 'FlowCap - Autonomous DeFi Wealth Manager',
-  description: 'AI-powered yield optimization on BNB Chain with maximum security',
+  title: 'FlowCap — Dashboard',
+  description: 'AI-powered DeFi yield optimization on BNB Chain. Manage your autonomous agent.',
 };
 
 export default function RootLayout({
@@ -13,8 +16,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>
+    <html lang="en" className="dark">
+      <body className={`${inter.className} noise`}>
         <WagmiProviders>{children}</WagmiProviders>
       </body>
     </html>

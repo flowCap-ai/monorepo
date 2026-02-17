@@ -1,17 +1,44 @@
 /**
  * FlowCap Delegation API Route
  *
- * Receives delegation from frontend and forwards to SERVER where OpenClaw runs
- * Server saves session key and starts autonomous trading
+ * Receives delegation metadata from frontend and forwards to SERVER.
+ * SECURITY: Session key private material NEVER leaves the client.
+ *           Only the session address (public) + permissions are sent.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 
-// SERVER endpoint where OpenClaw is running
+// ─── Config ──────────────────────────────────────────────────────
 const SERVER_URL = process.env.FLOWCAP_SERVER_URL || 'http://localhost:3001';
+const API_SECRET = process.env.FLOWCAP_API_SECRET || '';
 
+// ─── Rate limiter (in-memory, per-ip, per-minute) ────────────────
+const rateLimitMap = new Map<string, { count: number; reset: number }>();
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now > entry.reset) {
+    rateLimitMap.set(ip, { count: 1, reset: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT_MAX;
+}
+
+// ─── Validators ──────────────────────────────────────────────────
+const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const VALID_RISK_PROFILES = ['low', 'medium', 'high'] as const;
+
+function isValidAddress(addr: unknown): addr is string {
+  return typeof addr === 'string' && ETH_ADDRESS_RE.test(addr);
+}
+
+// ─── Types ───────────────────────────────────────────────────────
 interface DelegationRequest {
-  sessionKey: string;
+  /** Public session key address — NEVER the private key */
   sessionAddress: string;
   smartAccountAddress: string;
   riskProfile: 'low' | 'medium' | 'high';
@@ -32,60 +59,132 @@ export async function POST(request: NextRequest) {
   console.log('🔔 API Route /api/delegate called');
 
   try {
+    // ── Rate limiting ──────────────────────────────────────────
+    const clientIp =
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+
+    if (isRateLimited(clientIp)) {
+      return NextResponse.json(
+        { success: false, error: 'Too many requests. Try again later.' },
+        { status: 429 }
+      );
+    }
+
     const body: DelegationRequest = await request.json();
 
-    console.log('📦 Request body received:', {
-      hasSessionKey: !!body.sessionKey,
-      smartAccountAddress: body.smartAccountAddress,
-      riskProfile: body.riskProfile,
-      maxInvestment: body.maxInvestment,
-    });
+    // ── Validate required fields ───────────────────────────────
+    const { sessionAddress, smartAccountAddress, riskProfile, maxInvestment, validUntil, permissions, chain } = body;
 
-    // Validate required fields
-    const { sessionKey, smartAccountAddress, riskProfile, maxInvestment } = body;
-
-    if (!sessionKey || !smartAccountAddress || !riskProfile || !maxInvestment) {
-      console.error('❌ Validation failed: Missing required fields');
+    if (!sessionAddress || !smartAccountAddress || !riskProfile || !maxInvestment) {
       return NextResponse.json(
-        { success: false, error: 'Missing required fields' },
+        { success: false, error: 'Missing required fields: sessionAddress, smartAccountAddress, riskProfile, maxInvestment' },
         { status: 400 }
       );
     }
 
-    console.log('📤 Sending delegation to server:', {
+    // ── SECURITY: Reject if caller sends a private key ─────────
+    if ('sessionKey' in body && typeof (body as any).sessionKey === 'string' && (body as any).sessionKey.length > 42) {
+      console.error('❌ Client attempted to send session private key — rejected');
+      return NextResponse.json(
+        { success: false, error: 'Do not send private keys. Only sessionAddress (public) is accepted.' },
+        { status: 400 }
+      );
+    }
+
+    // ── Address validation ─────────────────────────────────────
+    if (!isValidAddress(sessionAddress)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid sessionAddress format' },
+        { status: 400 }
+      );
+    }
+    if (!isValidAddress(smartAccountAddress)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid smartAccountAddress format' },
+        { status: 400 }
+      );
+    }
+
+    // ── Risk profile validation ────────────────────────────────
+    if (!VALID_RISK_PROFILES.includes(riskProfile)) {
+      return NextResponse.json(
+        { success: false, error: `Invalid riskProfile. Must be one of: ${VALID_RISK_PROFILES.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // ── Validate permissions array ─────────────────────────────
+    if (!Array.isArray(permissions) || permissions.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'permissions array is required and must not be empty' },
+        { status: 400 }
+      );
+    }
+
+    for (const perm of permissions) {
+      if (!isValidAddress(perm.target)) {
+        return NextResponse.json(
+          { success: false, error: `Invalid permission target: ${perm.target}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // ── Validate validUntil ────────────────────────────────────
+    if (!validUntil || validUntil < Date.now() / 1000) {
+      return NextResponse.json(
+        { success: false, error: 'validUntil must be a future unix timestamp' },
+        { status: 400 }
+      );
+    }
+
+    console.log('📤 Sending delegation metadata to server (no private key):', {
+      sessionAddress,
       smartAccountAddress,
       riskProfile,
       maxInvestment,
       server: SERVER_URL,
     });
 
-    // Create delegation payload
+    // ── Build safe payload (explicitly exclude any private key) ─
     const delegationId = `${smartAccountAddress.toLowerCase()}-${Date.now()}`;
-    const delegationData = {
+    const safePayload = {
       id: delegationId,
       timestamp: Date.now(),
       status: 'active',
-      ...body,
+      sessionAddress,
+      smartAccountAddress,
+      riskProfile,
+      maxInvestment,
+      validUntil,
+      permissions,
+      chain,
     };
 
-    // Send to SERVER where OpenClaw is running
+    // ── Forward to OpenClaw server ─────────────────────────────
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (API_SECRET) {
+        headers['Authorization'] = `Bearer ${API_SECRET}`;
+      }
+
       const serverResponse = await fetch(`${SERVER_URL}/api/flowcap/delegate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Optional: Add auth if server is public
-          // 'Authorization': `Bearer ${process.env.SERVER_API_KEY}`,
-        },
-        body: JSON.stringify(delegationData),
+        headers,
+        body: JSON.stringify(safePayload),
+        signal: AbortSignal.timeout(10_000), // 10s timeout
       });
 
       if (!serverResponse.ok) {
         const errorText = await serverResponse.text();
         console.error('❌ Server rejected delegation:', errorText);
         return NextResponse.json(
-          { success: false, error: 'Server rejected delegation', details: errorText },
-          { status: 500 }
+          { success: false, error: 'Server rejected delegation' },
+          { status: 502 }
         );
       }
 
@@ -95,10 +194,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         delegationId,
-        message: 'Delegation sent to server successfully',
+        message: 'Delegation registered successfully',
         smartAccountAddress,
         riskProfile,
-        server: SERVER_URL,
       });
 
     } catch (serverError) {
@@ -107,8 +205,6 @@ export async function POST(request: NextRequest) {
         {
           success: false,
           error: 'Could not reach FlowCap server',
-          details: serverError instanceof Error ? serverError.message : 'Unknown error',
-          server: SERVER_URL,
         },
         { status: 503 }
       );
@@ -117,7 +213,7 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('❌ Delegation error:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Delegation failed' },
+      { success: false, error: 'Delegation failed' },
       { status: 500 }
     );
   }
@@ -128,7 +224,7 @@ export async function GET() {
     success: true,
     message: 'FlowCap Delegation API',
     endpoints: {
-      POST: '/api/delegate - Submit delegation data',
+      POST: '/api/delegate — Submit delegation metadata (session address only, no private key)',
     },
   });
 }

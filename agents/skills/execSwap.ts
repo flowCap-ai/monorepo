@@ -5,11 +5,19 @@ import {
   encodeFunctionData,
   parseUnits,
   formatUnits,
+  keccak256,
+  encodeAbiParameters,
+  parseAbiParameters,
+  concat,
+  toHex,
   type Address,
   type Hex,
 } from 'viem';
 import { bsc } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as yaml from 'js-yaml';
 
 // Environment variables
 const BNB_RPC_URL = process.env.BNB_RPC_URL || 'https://bsc-dataseed1.binance.org';
@@ -17,6 +25,106 @@ const BICONOMY_BUNDLER_URL = process.env.BICONOMY_BUNDLER_URL || '';
 const BICONOMY_PAYMASTER_URL = process.env.BICONOMY_PAYMASTER_URL || '';
 const SESSION_PRIVATE_KEY = process.env.SESSION_PRIVATE_KEY || '';
 const ENTRYPOINT_ADDRESS = (process.env.ENTRYPOINT_ADDRESS || '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789') as Address;
+
+// ─── S8: BLOCKED FUNCTIONS ENFORCEMENT ───────────────────────────
+// Load config.yaml and enforce blockedFunctions at runtime
+interface FlowCapConfig {
+  sessionKeyPolicy?: {
+    blockedFunctions?: string[];
+    maxTxValue?: number;
+  };
+}
+
+let _configCache: FlowCapConfig | null = null;
+
+function loadConfig(): FlowCapConfig {
+  if (_configCache) return _configCache;
+  try {
+    const configPath = path.resolve(__dirname, '..', 'config.yaml');
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    _configCache = yaml.load(raw) as FlowCapConfig;
+    return _configCache!;
+  } catch {
+    // Fallback: always block transfer & transferFrom
+    _configCache = {
+      sessionKeyPolicy: {
+        blockedFunctions: ['transfer', 'transferFrom'],
+        maxTxValue: 10000,
+      },
+    };
+    return _configCache!;
+  }
+}
+
+/** Well-known function selectors for blocked functions */
+const BLOCKED_SELECTORS: Record<string, string> = {
+  transfer: '0xa9059cbb',
+  transferFrom: '0x23b872dd',
+};
+
+/**
+ * Validates that a calldata does NOT invoke a blocked function.
+ * Throws if the function selector matches a blocked entry from config.yaml.
+ */
+function assertNotBlocked(callData: Hex, description: string): void {
+  if (!callData || callData.length < 10) return; // no selector
+  const selector = callData.slice(0, 10).toLowerCase();
+
+  const config = loadConfig();
+  const blocked = config.sessionKeyPolicy?.blockedFunctions ?? ['transfer', 'transferFrom'];
+
+  for (const fn of blocked) {
+    const knownSelector = BLOCKED_SELECTORS[fn];
+    if (knownSelector && selector === knownSelector.toLowerCase()) {
+      throw new Error(
+        `🚫 BLOCKED: Function "${fn}" (${knownSelector}) is not allowed by session key policy. Context: ${description}`
+      );
+    }
+  }
+}
+
+/**
+ * Validates that a transaction value does not exceed maxTxValue from config.
+ */
+function assertValueLimit(valueWei: bigint, description: string): void {
+  const config = loadConfig();
+  const maxTxValue = config.sessionKeyPolicy?.maxTxValue ?? 10000;
+  // maxTxValue is in "token units" (typically USD-denominated).
+  // Convert to wei assuming 18 decimals for comparison.
+  const maxWei = BigInt(maxTxValue) * BigInt(10 ** 18);
+  if (valueWei > maxWei) {
+    throw new Error(
+      `🚫 BLOCKED: Transaction value ${formatUnits(valueWei, 18)} exceeds maxTxValue ${maxTxValue}. Context: ${description}`
+    );
+  }
+}
+
+// ─── F4: DYNAMIC BNB PRICE ──────────────────────────────────────
+let _bnbPriceCache: { price: number; fetchedAt: number } | null = null;
+const BNB_PRICE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Fetch current BNB price from CoinGecko (with 5-min cache).
+ * Falls back to $600 if the API is unreachable.
+ */
+async function getBnbPriceUSD(): Promise<number> {
+  if (_bnbPriceCache && Date.now() - _bnbPriceCache.fetchedAt < BNB_PRICE_CACHE_TTL_MS) {
+    return _bnbPriceCache.price;
+  }
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd',
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const data = (await res.json()) as { binancecoin?: { usd?: number } };
+    const price = data?.binancecoin?.usd ?? 600;
+    _bnbPriceCache = { price, fetchedAt: Date.now() };
+    return price;
+  } catch {
+    console.warn('⚠️ CoinGecko unreachable, using cached/fallback BNB price');
+    return _bnbPriceCache?.price ?? 600;
+  }
+}
 
 // Contract addresses
 const PANCAKESWAP_ROUTER_V2 = (process.env.PANCAKESWAP_ROUTER_V2 || '0x10ED43C718714eb63d5aA57B78B54704E256024E') as Address;
@@ -446,10 +554,21 @@ export async function executeSwap(params: SwapParams): Promise<TransactionResult
     // Get quote
     const quote = await getSwapQuote(params);
 
-    // Calculate minimum amount out with slippage
+    // Get token decimals dynamically
+    const tokenOutInfo = params.tokenOut.startsWith('0x')
+      ? await getTokenInfo(params.tokenOut as Address)
+      : { decimals: 18 };
+    const tokenInInfo = params.tokenIn.startsWith('0x')
+      ? await getTokenInfo(params.tokenIn as Address)
+      : { decimals: 18 };
+
+    // Calculate minimum amount out with slippage (using actual decimals)
     const amountOutMin = parseFloat(quote.amountOut) * (1 - params.slippageTolerance / 100);
-    const amountOutMinWei = parseUnits(amountOutMin.toString(), 18);
-    const amountInWei = parseUnits(params.amountIn, 18);
+    const amountOutMinWei = parseUnits(amountOutMin.toFixed(tokenOutInfo.decimals), tokenOutInfo.decimals);
+    const amountInWei = parseUnits(params.amountIn, tokenInInfo.decimals);
+
+    // S8: Enforce value limit
+    assertValueLimit(amountInWei, `executeSwap ${params.tokenIn} → ${params.tokenOut}`);
 
     // Set deadline (20 minutes from now)
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
@@ -462,6 +581,9 @@ export async function executeSwap(params: SwapParams): Promise<TransactionResult
       quote.route,
       deadline
     );
+
+    // S8: Enforce blocked functions
+    assertNotBlocked(callData, `swap ${params.tokenIn} → ${params.tokenOut}`);
 
     // Create session key account
     const sessionAccount = privateKeyToAccount(SESSION_PRIVATE_KEY as Hex);
@@ -498,10 +620,37 @@ async function buildUserOperation(
   // Get current gas prices
   const gasPrice = await publicClient.getGasPrice();
 
+  // S9: Fetch nonce from EntryPoint contract
+  const ENTRYPOINT_NONCE_ABI = [
+    {
+      name: 'getNonce',
+      type: 'function',
+      stateMutability: 'view',
+      inputs: [
+        { name: 'sender', type: 'address' },
+        { name: 'key', type: 'uint192' },
+      ],
+      outputs: [{ name: 'nonce', type: 'uint256' }],
+    },
+  ] as const;
+
+  let nonce: bigint;
+  try {
+    nonce = await publicClient.readContract({
+      address: ENTRYPOINT_ADDRESS,
+      abi: ENTRYPOINT_NONCE_ABI,
+      functionName: 'getNonce',
+      args: [smartAccountAddress, BigInt(0)],
+    });
+  } catch {
+    console.warn('⚠️ Could not fetch nonce from EntryPoint, using 0');
+    nonce = BigInt(0);
+  }
+
   // Build the UserOperation structure
   const userOp: UserOperation = {
     sender: smartAccountAddress,
-    nonce: BigInt(0), // Will be fetched from EntryPoint
+    nonce,
     initCode: '0x' as Hex,
     callData,
     callGasLimit: BigInt(process.env.GAS_LIMIT_SWAP || '300000'),
@@ -523,13 +672,46 @@ async function buildUserOperation(
 }
 
 /**
- * Calculate UserOperation hash (simplified)
+ * Calculate UserOperation hash per EIP-4337 spec.
+ *
+ * hash = keccak256(abi.encode(
+ *   keccak256(pack(userOp)),
+ *   entryPoint,
+ *   chainId
+ * ))
  */
 async function getUserOpHash(userOp: UserOperation): Promise<Hex> {
-  // Simplified hash calculation
-  // In production, use proper EIP-4337 hash calculation
-  const packed = `${userOp.sender}${userOp.nonce}${userOp.callData}`;
-  return `0x${Buffer.from(packed).toString('hex').slice(0, 64)}` as Hex;
+  // Pack the UserOp fields (excluding signature)
+  const packed = encodeAbiParameters(
+    parseAbiParameters(
+      'address, uint256, bytes32, bytes32, uint256, uint256, uint256, uint256, uint256, bytes32'
+    ),
+    [
+      userOp.sender,
+      userOp.nonce,
+      keccak256(userOp.initCode),
+      keccak256(userOp.callData),
+      userOp.callGasLimit,
+      userOp.verificationGasLimit,
+      userOp.preVerificationGas,
+      userOp.maxFeePerGas,
+      userOp.maxPriorityFeePerGas,
+      keccak256(userOp.paymasterAndData),
+    ]
+  );
+
+  const userOpHash = keccak256(packed);
+
+  // Final hash includes entrypoint and chain id
+  const chainId = BigInt(bsc.id);
+  const finalHash = keccak256(
+    encodeAbiParameters(
+      parseAbiParameters('bytes32, address, uint256'),
+      [userOpHash, ENTRYPOINT_ADDRESS, chainId]
+    )
+  );
+
+  return finalHash;
 }
 
 /**
@@ -657,6 +839,9 @@ export async function supplyToVenus(
 
     const amountWei = parseUnits(amount, 18);
 
+    // S8: Enforce value limit
+    assertValueLimit(amountWei, `supplyToVenus ${token}`);
+
     // Build approval calldata
     const approveCalldata = encodeFunctionData({
       abi: ERC20_ABI,
@@ -664,12 +849,18 @@ export async function supplyToVenus(
       args: [vTokenAddress, amountWei],
     });
 
+    // S8: Enforce blocked functions on approve
+    assertNotBlocked(approveCalldata, `approve for Venus supply ${token}`);
+
     // Build mint calldata
     const mintCalldata = encodeFunctionData({
       abi: VTOKEN_ABI,
       functionName: 'mint',
       args: [amountWei],
     });
+
+    // S8: Enforce blocked functions on mint
+    assertNotBlocked(mintCalldata, `Venus supply ${token}`);
 
     // Execute via session key
     const sessionAccount = privateKeyToAccount(SESSION_PRIVATE_KEY as Hex);
@@ -718,12 +909,18 @@ export async function withdrawFromVenus(
 
     const amountWei = parseUnits(amount, 18);
 
+    // S8: Enforce value limit
+    assertValueLimit(amountWei, `withdrawFromVenus ${token}`);
+
     // Build redeem calldata
     const redeemCalldata = encodeFunctionData({
       abi: VTOKEN_ABI,
       functionName: 'redeemUnderlying',
       args: [amountWei],
     });
+
+    // S8: Enforce blocked functions
+    assertNotBlocked(redeemCalldata, `Venus withdraw ${token}`);
 
     // Execute via session key
     const sessionAccount = privateKeyToAccount(SESSION_PRIVATE_KEY as Hex);
@@ -765,8 +962,8 @@ export async function isSwapProfitable(
   const gasCostWei = gasPrice * quote.estimatedGas;
   const gasCostBNB = Number(formatUnits(gasCostWei, 18));
 
-  // Assume BNB price (in production, fetch from oracle)
-  const bnbPriceUSD = 600;
+  // Assume BNB price (dynamically fetched with cache)
+  const bnbPriceUSD = await getBnbPriceUSD();
   const gasCostUSD = gasCostBNB * bnbPriceUSD;
 
   // Calculate potential yield gain
