@@ -8,6 +8,9 @@ export * from './getPoolData.js';
 export * from './analyzePool.js';
 export * from './execSwap.js';
 
+// Portfolio evaluation
+export * from './PortfolioEvaluation.js';
+
 // Default exports
 export { default as getPoolData } from './getPoolData.js';
 export { default as analyzePool } from './analyzePool.js';

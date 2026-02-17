@@ -80,46 +80,64 @@ async function runMonteCarloV3() {
       CONFIG.HISTORICAL_DAYS
     );
     
+    let mu: number, sigma: number, dataSource: string, CURRENT_PRICE: number;
+    
     if (!priceRatios) {
-      throw new Error(`Failed to retrieve historical data for ${CONFIG.ASSET_2}/${CONFIG.ASSET_1}. CoinGecko API may be unavailable or the tokens may not be supported.`);
-    }
-    
-    console.log(`✅ Retrieved ${priceRatios.length} price points\n`);
-    
-    // Calculate current price from most recent data point
-    // priceRatios is ASSET_1/ASSET_2, but we want ASSET_2/ASSET_1 for display
-    const priceRatio = priceRatios[priceRatios.length - 1];
-    const CURRENT_PRICE = 1 / priceRatio; // Invert to get ASSET_2/ASSET_1
-    console.log(`📍 Current Price P_0: ${CURRENT_PRICE.toFixed(4)} ${CONFIG.ASSET_2}/${CONFIG.ASSET_1}`);
-    console.log(`   Range: [${CONFIG.P_A}, ${CONFIG.P_B}] (${((CONFIG.P_A / CURRENT_PRICE - 1) * 100).toFixed(1)}% to +${((CONFIG.P_B / CURRENT_PRICE - 1) * 100).toFixed(1)}%)\n`);
-    
-    const params = estimateLogReturnParameters(priceRatios);
-    
-    const mu = params.mu;
-    const sigma = params.sigma;
-    const dataSource = 'Historical (CoinGecko)';
-    
-    console.log('Distribution Parameters Estimated:');
-    console.log(`  Daily μ (drift):       ${(params.mu * 100).toFixed(4)}%`);
-    console.log(`  Daily σ (volatility):  ${(params.sigma * 100).toFixed(2)}%`);
-    console.log(`  Annualized drift:      ${(params.annualizedMu * 100).toFixed(2)}%`);
-    console.log(`  Annualized volatility: ${(params.annualizedSigma * 100).toFixed(2)}%`);
-    console.log(`  Sample size:           ${params.sampleSize} days\n`);
-    
-    // Interpret volatility for V3
-    const annualVol = params.annualizedSigma * 100;
-    if (annualVol < 20) {
-      console.log('📊 VOLATILITY: Low (stable pair)');
-      console.log('   V3 Strategy: Can use narrow range for high capital efficiency\n');
-    } else if (annualVol < 50) {
-      console.log('📊 VOLATILITY: Moderate');
-      console.log('   V3 Strategy: Use moderate range to balance fees vs out-of-range risk\n');
-    } else if (annualVol < 100) {
-      console.log('📊 VOLATILITY: High (volatile pair)');
-      console.log('   V3 Strategy: Consider wider range or stick with V2\n');
+      console.warn('⚠️  CoinGecko API unavailable. Using estimated parameters as fallback...\n');
+      
+      // Fallback: Use typical crypto volatility estimates
+      // USDT-WBNB historical volatility: ~2-3% daily
+      mu = 0.0001; // Small positive drift (0.01% daily)
+      sigma = 0.025; // 2.5% daily volatility (typical for BNB/stablecoin pairs)
+      dataSource = 'Estimated (CoinGecko unavailable)';
+      
+      // Use midpoint of range as current price estimate
+      CURRENT_PRICE = (CONFIG.P_A + CONFIG.P_B) / 2;
+      
+      console.log('📍 Using Estimated Parameters:');
+      console.log(`   Current Price P_0: ${CURRENT_PRICE.toFixed(4)} ${CONFIG.ASSET_2}/${CONFIG.ASSET_1} (range midpoint)`);
+      console.log(`   Daily μ (drift):   ${(mu * 100).toFixed(4)}%`);
+      console.log(`   Daily σ (volatility): ${(sigma * 100).toFixed(2)}%`);
+      console.log(`   Annualized volatility: ${(sigma * Math.sqrt(365) * 100).toFixed(2)}%\n`);
+      console.log('💡 Tip: Wait a few minutes for CoinGecko rate limits to reset for more accurate data.\n');
     } else {
-      console.log('📊 VOLATILITY: Very High (extremely volatile!)');
-      console.log('   V3 Strategy: ⚠️ V2 might be safer for this pair\n');
+      console.log(`✅ Retrieved ${priceRatios.length} price points\n`);
+      
+      // Calculate current price from most recent data point
+      // priceRatios is ASSET_1/ASSET_2, but we want ASSET_2/ASSET_1 for display
+      const priceRatio = priceRatios[priceRatios.length - 1];
+      CURRENT_PRICE = 1 / priceRatio; // Invert to get ASSET_2/ASSET_1
+      console.log(`📍 Current Price P_0: ${CURRENT_PRICE.toFixed(4)} ${CONFIG.ASSET_2}/${CONFIG.ASSET_1}`);
+      console.log(`   Range: [${CONFIG.P_A}, ${CONFIG.P_B}] (${((CONFIG.P_A / CURRENT_PRICE - 1) * 100).toFixed(1)}% to +${((CONFIG.P_B / CURRENT_PRICE - 1) * 100).toFixed(1)}%)\n`);
+      
+      const params = estimateLogReturnParameters(priceRatios);
+      
+      mu = params.mu;
+      sigma = params.sigma;
+      dataSource = 'Historical (CoinGecko)';
+      
+      console.log('Distribution Parameters Estimated:');
+      console.log(`  Daily μ (drift):       ${(params.mu * 100).toFixed(4)}%`);
+      console.log(`  Daily σ (volatility):  ${(params.sigma * 100).toFixed(2)}%`);
+      console.log(`  Annualized drift:      ${(params.annualizedMu * 100).toFixed(2)}%`);
+      console.log(`  Annualized volatility: ${(params.annualizedSigma * 100).toFixed(2)}%`);
+      console.log(`  Sample size:           ${params.sampleSize} days\n`);
+      
+      // Interpret volatility for V3
+      const annualVol = params.annualizedSigma * 100;
+      if (annualVol < 20) {
+        console.log('📊 VOLATILITY: Low (stable pair)');
+        console.log('   V3 Strategy: Can use narrow range for high capital efficiency\n');
+      } else if (annualVol < 50) {
+        console.log('📊 VOLATILITY: Moderate');
+        console.log('   V3 Strategy: Use moderate range to balance fees vs out-of-range risk\n');
+      } else if (annualVol < 100) {
+        console.log('📊 VOLATILITY: High (volatile pair)');
+        console.log('   V3 Strategy: Consider wider range or stick with V2\n');
+      } else {
+        console.log('📊 VOLATILITY: Very High (extremely volatile!)');
+        console.log('   V3 Strategy: ⚠️ V2 might be safer for this pair\n');
+      }
     }
     
     // Step 2: Fetch pool data
@@ -200,7 +218,7 @@ async function runMonteCarloV3() {
         h: CONFIG.H,
         feeTier: CONFIG.FEE_TIER,
         optimizeRange: false,  // No optimization, use provided parameters
-        volatility: params.annualizedSigma,
+        volatility: sigma, // Use daily volatility
       }
     );
     
@@ -227,53 +245,86 @@ async function runMonteCarloV3() {
 }
 
 /**
- * Build V3 analysis results summary object
+ * Build V3 analysis results summary object with standardized format
  */
 function buildResultsSummary(analysis: any, dataSource: string, currentPrice: number) {
   return {
-    strategy: 'V3 Concentrated Liquidity',
-    pair: `${CONFIG.ASSET_1}-${CONFIG.ASSET_2}`,
-    initialInvestment: CONFIG.V_INITIAL,
-    currentPrice: currentPrice.toFixed(4),
-    period: CONFIG.PERIOD_DAYS,
+    productType: 'LPV3',
+    timestamp: new Date().toISOString(),
     
-    // Range parameters
-    priceRange: {
-      P_a: analysis.optimalPriceRange.P_a,
-      P_b: analysis.optimalPriceRange.P_b,
-      h: analysis.optimalPriceRange.h,
-      feeTier: (CONFIG.FEE_TIER * 100).toFixed(2) + '%',
-      rangeWidthPercent: (analysis.optimalPriceRange.rangeWidth * 100).toFixed(1) + '%',
-      lowerBoundDistance: ((analysis.optimalPriceRange.P_a / currentPrice - 1) * 100).toFixed(1) + '%',
-      upperBoundDistance: ((analysis.optimalPriceRange.P_b / currentPrice - 1) * 100).toFixed(1) + '%',
+    config: {
+      pair: `${CONFIG.ASSET_1}-${CONFIG.ASSET_2}`,
+      initialInvestment: CONFIG.V_INITIAL,
+      periodDays: CONFIG.PERIOD_DAYS,
+      numSimulations: CONFIG.NUM_SIMULATIONS,
+      historicalDays: CONFIG.HISTORICAL_DAYS,
+      priceRange: {
+        P_a: analysis.optimalPriceRange.P_a,
+        P_b: analysis.optimalPriceRange.P_b,
+        harvestFrequencyDays: analysis.optimalPriceRange.h,
+        feeTier: CONFIG.FEE_TIER,
+      },
     },
     
-    // V3 specific metrics
-    capitalEfficiency: analysis.capitalEfficiency.toFixed(2) + 'x',
-    timeInRange: analysis.timeInRange.toFixed(1) + '%',
-    concentrationRisk: analysis.concentrationRisk,
+    marketConditions: {
+      currentPrice,
+      priceVolatility: analysis.priceVolatility,
+      volumeToTVLRatio: analysis.volumeToTVLRatio,
+      dataSource,
+      timeInRange: analysis.timeInRange,
+      capitalEfficiency: analysis.capitalEfficiency,
+      rangeMetrics: {
+        rangeWidthPercent: analysis.optimalPriceRange.rangeWidth,
+        lowerBoundDistance: (analysis.optimalPriceRange.P_a / currentPrice - 1),
+        upperBoundDistance: (analysis.optimalPriceRange.P_b / currentPrice - 1),
+      },
+    },
     
-    // Returns
-    expectedFinalValue: analysis.expectedValue.toFixed(2),
-    expectedReturn: analysis.totalReturn.toFixed(2),
-    expectedReturnPercent: analysis.totalReturnPercent.toFixed(2) + '%',
-    annualizedAPY: analysis.annualizedAPY.toFixed(2) + '%',
+    analysis: {
+      returns: {
+        expectedFinalValue: analysis.expectedValue,
+        expectedReturn: analysis.totalReturn,
+        expectedReturnPercent: analysis.totalReturnPercent,
+        annualizedAPY: analysis.annualizedAPY,
+      },
+      
+      distribution: {
+        mean: analysis.expectedValue,
+        median: null, // Not provided by LPV3Analysis
+        stdDeviation: null, // Not provided by LPV3Analysis
+        percentile5: null,
+        percentile25: null,
+        percentile75: null,
+        percentile95: null,
+      },
+      
+      risk: {
+        probabilityOfLoss: null, // Not provided by LPV3Analysis
+        probabilityOfProfit: null,
+        valueAtRisk5: null,
+        riskScore: analysis.riskScore,
+        riskLevel: analysis.riskLevel,
+      },
+      
+      costs: {
+        totalGasCost: analysis.totalGasCost,
+        harvestCount: null, // Can be calculated if needed
+        optimalHarvestFrequency: analysis.optimalPriceRange.h,
+      },
+      
+      yields: {
+        tradingFeeAPY: analysis.tradingFeeAPY,
+        farmingRewardAPY: analysis.farmingRewardAPY,
+        impermanentLoss: analysis.impermanentLoss,
+      },
+    },
     
-    // Component breakdown
-    tradingFeeAPY: analysis.tradingFeeAPY.toFixed(2) + '%',
-    farmingRewardAPY: analysis.farmingRewardAPY.toFixed(2) + '%',
-    impermanentLoss: analysis.impermanentLoss.toFixed(2) + '%',
-    totalGasCost: analysis.totalGasCost.toFixed(4),
+    productSpecific: {
+      concentrationRisk: analysis.concentrationRisk,
+      feesEarned: analysis.feesEarned,
+    },
     
-    // Risk metrics
-    riskScore: analysis.riskScore,
-    riskLevel: analysis.riskLevel,
     warnings: analysis.warnings,
-    priceVolatility: (analysis.priceVolatility * 100).toFixed(2) + '% daily',
-    
-    // Market metrics
-    volumeToTVLRatio: analysis.volumeToTVLRatio.toFixed(4),
-    dataSource: dataSource,
   };
 }
 

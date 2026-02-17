@@ -85,7 +85,14 @@ function getCoinGeckoId(symbol: string): string | null {
 }
 
 /**
- * Get historical prices from CoinGecko
+ * Sleep/wait for a specified number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get historical prices from CoinGecko with retry logic for rate limits
  * 
  * @param symbol - Token symbol (e.g., 'BTC', 'ETH', 'BNB')
  * @param days - Number of days of history (1, 7, 14, 30, 90, 180, 365, max)
@@ -96,6 +103,10 @@ export async function getHistoricalPricesFromCoinGecko(
   days: number | 'max' = 30,
   interval: 'hourly' | 'daily' = 'daily'
 ): Promise<PriceHistory | null> {
+  const MAX_RETRY_DURATION_MS = 3 * 60 * 1000; // 3 minutes
+  const INITIAL_BACKOFF_MS = 5000; // Start with 5 seconds
+  const MAX_BACKOFF_MS = 60000; // Cap at 60 seconds
+  
   try {
     const coinId = getCoinGeckoId(symbol);
     if (!coinId) {
@@ -110,41 +121,81 @@ export async function getHistoricalPricesFromCoinGecko(
     
     console.log(`Fetching ${symbol} price history from CoinGecko (${days} days)...`);
     
-    const response = await fetch(url);
+    const startTime = Date.now();
+    let attempt = 0;
+    let backoffMs = INITIAL_BACKOFF_MS;
     
-    if (!response.ok) {
-      if (response.status === 429) {
-        console.error('CoinGecko rate limit exceeded. Wait a few minutes or use API key.');
+    while (true) {
+      const elapsedMs = Date.now() - startTime;
+      
+      // Check if we've exceeded the total retry duration
+      if (attempt > 0 && elapsedMs >= MAX_RETRY_DURATION_MS) {
+        console.error(`⏱️  Retry timeout exceeded (3 minutes). Giving up on ${symbol}.`);
+        return null;
       }
-      console.error(`Failed to fetch from CoinGecko: ${response.status}`);
-      return null;
+      
+      try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          if (response.status === 429) {
+            attempt++;
+            const remainingMs = MAX_RETRY_DURATION_MS - elapsedMs;
+            
+            if (remainingMs <= 0) {
+              console.error(`⏱️  Rate limit retry timeout exceeded for ${symbol}.`);
+              return null;
+            }
+            
+            const waitMs = Math.min(backoffMs, remainingMs);
+            console.warn(`⏳ CoinGecko rate limit hit. Retrying in ${(waitMs / 1000).toFixed(1)}s... (attempt ${attempt})`);
+            
+            await sleep(waitMs);
+            
+            // Exponential backoff with cap
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            continue; // Retry the request
+          }
+          
+          // Non-429 error - fail immediately
+          console.error(`Failed to fetch from CoinGecko: ${response.status}`);
+          return null;
+        }
+
+        const data = await response.json() as { prices?: [number, number][] };
+        
+        if (!data.prices || data.prices.length === 0) {
+          console.error('No price data returned from CoinGecko');
+          return null;
+        }
+
+        const dataPoints: PricePoint[] = data.prices.map(([timestamp, price]) => ({
+          timestamp,
+          date: new Date(timestamp).toISOString(),
+          price,
+        }));
+
+        const startDate = dataPoints[0].date;
+        const endDate = dataPoints[dataPoints.length - 1].date;
+
+        if (attempt > 0) {
+          console.log(`✅ Retry successful after ${attempt} attempt(s)!`);
+        }
+        console.log(`✅ Retrieved ${dataPoints.length} price points for ${symbol} (${startDate} to ${endDate})`);
+
+        return {
+          asset: symbol,
+          startDate,
+          endDate,
+          dataPoints,
+          source: 'coingecko',
+        };
+      } catch (fetchError) {
+        // Network or parsing error - fail immediately
+        console.error(`Network error fetching ${symbol}:`, fetchError);
+        return null;
+      }
     }
-
-    const data = await response.json() as { prices?: [number, number][] };
-    
-    if (!data.prices || data.prices.length === 0) {
-      console.error('No price data returned from CoinGecko');
-      return null;
-    }
-
-    const dataPoints: PricePoint[] = data.prices.map(([timestamp, price]) => ({
-      timestamp,
-      date: new Date(timestamp).toISOString(),
-      price,
-    }));
-
-    const startDate = dataPoints[0].date;
-    const endDate = dataPoints[dataPoints.length - 1].date;
-
-    console.log(`✅ Retrieved ${dataPoints.length} price points for ${symbol} (${startDate} to ${endDate})`);
-
-    return {
-      asset: symbol,
-      startDate,
-      endDate,
-      dataPoints,
-      source: 'coingecko',
-    };
   } catch (error) {
     console.error(`Error fetching historical prices for ${symbol}:`, error);
     return null;
@@ -152,20 +203,63 @@ export async function getHistoricalPricesFromCoinGecko(
 }
 
 /**
- * Get current price from CoinGecko
+ * Get current price from CoinGecko with retry logic for rate limits
  */
 export async function getCurrentPrice(symbol: string): Promise<number | null> {
+  const MAX_RETRY_DURATION_MS = 3 * 60 * 1000; // 3 minutes
+  const INITIAL_BACKOFF_MS = 5000; // Start with 5 seconds
+  const MAX_BACKOFF_MS = 60000; // Cap at 60 seconds
+  
   try {
     const coinId = getCoinGeckoId(symbol);
     if (!coinId) return null;
 
     const url = `${COINGECKO_API_URL}/simple/price?ids=${coinId}&vs_currencies=usd`;
-    const response = await fetch(url);
     
-    if (!response.ok) return null;
+    const startTime = Date.now();
+    let attempt = 0;
+    let backoffMs = INITIAL_BACKOFF_MS;
+    
+    while (true) {
+      const elapsedMs = Date.now() - startTime;
+      
+      // Check if we've exceeded the total retry duration
+      if (attempt > 0 && elapsedMs >= MAX_RETRY_DURATION_MS) {
+        console.error(`⏱️  Retry timeout exceeded (3 minutes) for current price of ${symbol}.`);
+        return null;
+      }
+      
+      try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          if (response.status === 429) {
+            attempt++;
+            const remainingMs = MAX_RETRY_DURATION_MS - elapsedMs;
+            
+            if (remainingMs <= 0) {
+              return null;
+            }
+            
+            const waitMs = Math.min(backoffMs, remainingMs);
+            console.warn(`⏳ Rate limit hit for current price. Retrying in ${(waitMs / 1000).toFixed(1)}s...`);
+            
+            await sleep(waitMs);
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            continue;
+          }
+          
+          // Non-429 error - fail immediately
+          return null;
+        }
 
-    const data = await response.json() as Record<string, { usd?: number }>;
-    return data[coinId]?.usd || null;
+        const data = await response.json() as Record<string, { usd?: number }>;
+        return data[coinId]?.usd || null;
+      } catch (fetchError) {
+        // Network error - fail immediately
+        return null;
+      }
+    }
   } catch (error) {
     console.error(`Error fetching current price for ${symbol}:`, error);
     return null;

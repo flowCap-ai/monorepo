@@ -151,7 +151,7 @@ async function main() {
     console.log(`   Sharpe Ratio:         ${analysis.sharpeRatio.toFixed(3)}`);
     console.log();
     
-    // Step 6: Save results to JSON in json_store_positions folder
+    // Step 6: Save results to JSON in json_store_positions folder with standardized format
     const outputDir = path.join(process.cwd(), 'agents', 'json_store_positions');
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
@@ -162,48 +162,86 @@ async function main() {
     const filepath = path.join(outputDir, filename);
     
     const output = {
+      productType: 'Lending',
+      timestamp: new Date().toISOString(),
+      
       config: {
         protocol: CONFIG.PROTOCOL,
         asset: CONFIG.ASSET,
         chain: CONFIG.CHAIN,
-        initialSupply: CONFIG.V_INITIAL,
+        initialInvestment: CONFIG.V_INITIAL,
         periodDays: CONFIG.PERIOD_DAYS,
-        numSimulations: CONFIG.NUM_SIMULATIONS
+        numSimulations: CONFIG.NUM_SIMULATIONS,
+        historicalDays: CONFIG.HISTORICAL_DAYS,
       },
-      interestRateModel: kinks.model,
-      utilizationStatistics: {
-        mean: utilizationStats.mean,
-        std: utilizationStats.std,
-        min: utilizationStats.min,
-        max: utilizationStats.max,
-        median: utilizationStats.median
+      
+      marketConditions: {
+        interestRateModel: {
+          modelType: kinks.model.modelType,
+          baseRatePerYear: kinks.model.baseRatePerYear,
+          multiplierPerYear: kinks.model.multiplierPerYear,
+          jumpMultiplierPerYear: kinks.model.jumpMultiplierPerYear,
+          kink: kinks.model.kink,
+          reserveFactor: kinks.model.reserveFactor,
+        },
+        utilizationStatistics: {
+          mean: utilizationStats.mean,
+          std: utilizationStats.std,
+          min: utilizationStats.min,
+          max: utilizationStats.max,
+          median: utilizationStats.median,
+        },
+        badDebtStatistics: {
+          totalBadDebt: badDebtStats.totalBadDebt,
+          eventCount: badDebtStats.eventCount,
+          annualizedRate: badDebtStats.annualizedBadDebtRate,
+          eventsPerYear: badDebtStats.eventsPerYear,
+        },
       },
-      badDebtStatistics: {
-        totalBadDebt: badDebtStats.totalBadDebt,
-        eventCount: badDebtStats.eventCount,
-        annualizedRate: badDebtStats.annualizedBadDebtRate,
-        eventsPerYear: badDebtStats.eventsPerYear
-      },
+      
       analysis: {
-        meanFinalValue: analysis.meanFinalValue,
-        stdFinalValue: analysis.stdFinalValue,
-        medianFinalValue: analysis.medianFinalValue,
-        percentile5: analysis.percentile5,
-        percentile95: analysis.percentile95,
-        meanReturn: analysis.meanReturn,
-        totalReturnPercent: analysis.totalReturnPercent,
-        annualizedAPY: analysis.annualizedAPY,
-        meanSupplyAPY: analysis.meanSupplyAPY,
-        utilizationMean: analysis.utilizationMean,
-        badDebtLosses: analysis.badDebtLosses,
-        optimalHarvestFrequency: analysis.optimalHarvestFrequency,
-        totalGasCost: analysis.totalGasCost,
-        harvestCount: analysis.harvestCount,
-        probabilityOfLoss: analysis.probabilityOfLoss,
-        maxDrawdown: analysis.maxDrawdown,
-        sharpeRatio: analysis.sharpeRatio
+        returns: {
+          expectedFinalValue: analysis.meanFinalValue,
+          expectedReturn: analysis.meanReturn,
+          expectedReturnPercent: analysis.totalReturnPercent,
+          annualizedAPY: analysis.annualizedAPY,
+        },
+        
+        distribution: {
+          mean: analysis.meanFinalValue,
+          median: analysis.medianFinalValue,
+          stdDeviation: analysis.stdFinalValue,
+          percentile5: analysis.percentile5,
+          percentile25: null, // Not provided by lending analysis
+          percentile75: null, // Not provided by lending analysis
+          percentile95: analysis.percentile95,
+        },
+        
+        risk: {
+          probabilityOfLoss: analysis.probabilityOfLoss,
+          probabilityOfProfit: 1 - analysis.probabilityOfLoss,
+          valueAtRisk5: null, // Not provided by lending analysis
+          riskScore: null, // Not provided by lending analysis
+          riskLevel: null, // Not provided by lending analysis
+        },
+        
+        costs: {
+          totalGasCost: analysis.totalGasCost,
+          harvestCount: analysis.harvestCount,
+          optimalHarvestFrequency: analysis.optimalHarvestFrequency,
+        },
+        
+        yields: {
+          meanSupplyAPY: analysis.meanSupplyAPY,
+          utilizationMean: analysis.utilizationMean,
+          badDebtLosses: analysis.badDebtLosses,
+        },
       },
-      timestamp: new Date().toISOString()
+      
+      productSpecific: {
+        sharpeRatio: analysis.sharpeRatio,
+        maxDrawdown: analysis.maxDrawdown,
+      },
     };
     
     fs.writeFileSync(filepath, JSON.stringify(output, null, 2));

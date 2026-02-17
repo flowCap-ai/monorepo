@@ -135,30 +135,46 @@ export async function analyzeLPV2Position(
     HISTORICAL_DAYS
   );
   
+  let mu: number, sigma: number, dataSource: string;
+  
   if (!priceRatios) {
-    throw new Error(`Failed to retrieve historical data for ${ASSET_1}/${ASSET_2}. CoinGecko API may be unavailable or the tokens may not be supported.`);
-  }
-  
-  if (verbose) {
-    console.log(`✅ Retrieved ${priceRatios.length} price points\n`);
-  }
-  
-  const params = estimateLogReturnParameters(priceRatios);
-  
-  const mu = params.mu;
-  const sigma = params.sigma;
-  const dataSource = 'Historical (CoinGecko)';
-  
-  if (verbose) {
-    console.log('Distribution Parameters Estimated:');
-    console.log(`  Daily μ (drift):       ${(params.mu * 100).toFixed(4)}%`);
-    console.log(`  Daily σ (volatility):  ${(params.sigma * 100).toFixed(2)}%`);
-    console.log(`  Annualized drift:      ${(params.annualizedMu * 100).toFixed(2)}%`);
-    console.log(`  Annualized volatility: ${(params.annualizedSigma * 100).toFixed(2)}%`);
-    console.log(`  Sample size:           ${params.sampleSize} days\n`);
+    if (verbose) {
+      console.warn('⚠️  CoinGecko API unavailable. Using estimated parameters as fallback...\n');
+      console.log('📊 Using Estimated Parameters:');
+      console.log(`   Daily μ (drift):   0.01%`);
+      console.log(`   Daily σ (volatility): 2.50%`);
+      console.log(`   Annualized volatility: ${(0.025 * Math.sqrt(365) * 100).toFixed(2)}%\n`);
+      console.log('💡 Tip: Wait a few minutes for CoinGecko rate limits to reset for more accurate data.\n');
+    }
     
+    // Fallback: Use typical crypto volatility estimates
+    mu = 0.0001; // 0.01% daily drift
+    sigma = 0.025; // 2.5% daily volatility (typical for stablecoin pairs)
+    dataSource = 'Estimated (CoinGecko unavailable)';
+  } else {
+    if (verbose) {
+      console.log(`✅ Retrieved ${priceRatios.length} price points\n`);
+    }
+    
+    const params = estimateLogReturnParameters(priceRatios);
+    
+    mu = params.mu;
+    sigma = params.sigma;
+    dataSource = 'Historical (CoinGecko)';
+    
+    if (verbose) {
+      console.log('Distribution Parameters Estimated:');
+      console.log(`  Daily μ (drift):       ${(params.mu * 100).toFixed(4)}%`);
+      console.log(`  Daily σ (volatility):  ${(params.sigma * 100).toFixed(2)}%`);
+      console.log(`  Annualized drift:      ${(params.annualizedMu * 100).toFixed(2)}%`);
+      console.log(`  Annualized volatility: ${(params.annualizedSigma * 100).toFixed(2)}%`);
+      console.log(`  Sample size:           ${params.sampleSize} days\n`);
+    }
+  }
+  
+  if (verbose) {
     // Interpret volatility
-    const annualVol = params.annualizedSigma * 100;
+    const annualVol = sigma * Math.sqrt(365) * 100;
     if (annualVol < 20) {
       console.log('📊 VOLATILITY: Low (stable pair)');
     } else if (annualVol < 50) {
@@ -223,34 +239,63 @@ export async function analyzeLPV2Position(
     NUM_SIMULATIONS
   );
   
-  // Build result object
-  const analysisResult: LPV2AnalysisResult = {
-    pair: `${ASSET_1}-${ASSET_2}`,
-    initialInvestment: V_INITIAL,
-    period: PERIOD_DAYS,
-    expectedFinalValue: result.meanVFinal,
-    expectedReturn: result.meanReturn,
-    expectedReturnPercent: result.meanReturnPercent,
-    annualizedAPY: (result.meanReturnPercent / PERIOD_DAYS) * 365,
-    risk: result.stdDevReturn,
-    standardDeviation: result.stdDevVFinal,
-    medianVFinal: result.medianVFinal,
-    probabilityOfLoss: result.probabilityOfLoss,
-    probabilityOfProfit: 1 - result.probabilityOfLoss,
-    worstCase5Percentile: result.percentile5,
-    bestCase5Percentile: result.percentile95,
-    percentile25: result.percentile25,
-    percentile75: result.percentile75,
-    valueAtRisk5: result.valueAtRisk5,
-    mu: result.distributionParams.mu,
-    sigma: result.distributionParams.sigma,
-    dataSource: dataSource,
-    numSimulations: result.numSimulations,
-    poolInfo: {
-      name: targetPool.name,
-      tvl: targetPool.exogenousParams.TVL_lp,
-      volume24h: targetPool.exogenousParams.V_24h,
+  // Build standardized result object
+  const analysisResult = {
+    productType: 'LPV2',
+    timestamp: new Date().toISOString(),
+    
+    config: {
+      pair: `${ASSET_1}-${ASSET_2}`,
+      initialInvestment: V_INITIAL,
+      periodDays: PERIOD_DAYS,
+      numSimulations: NUM_SIMULATIONS,
+      historicalDays: HISTORICAL_DAYS,
+    },
+    
+    marketConditions: {
+      poolName: targetPool.name,
+      tvl: poolParams.TVL_lp,
+      volume24h: poolParams.V_24h,
+      volumeToTVLRatio: poolParams.V_24h / poolParams.TVL_lp,
       hasFarming,
+      distributionParams: {
+        mu: result.distributionParams.mu,
+        sigma: result.distributionParams.sigma,
+      },
+      dataSource,
+    },
+    
+    analysis: {
+      returns: {
+        expectedFinalValue: result.meanVFinal,
+        expectedReturn: result.meanReturn,
+        expectedReturnPercent: result.meanReturnPercent,
+        annualizedAPY: (result.meanReturnPercent / PERIOD_DAYS) * 365,
+      },
+      
+      distribution: {
+        mean: result.meanVFinal,
+        median: result.medianVFinal,
+        stdDeviation: result.stdDevVFinal,
+        percentile5: result.percentile5,
+        percentile25: result.percentile25,
+        percentile75: result.percentile75,
+        percentile95: result.percentile95,
+      },
+      
+      risk: {
+        probabilityOfLoss: result.probabilityOfLoss,
+        probabilityOfProfit: 1 - result.probabilityOfLoss,
+        valueAtRisk5: result.valueAtRisk5,
+        riskScore: null, // Not calculated in V2
+        riskLevel: null, // Not calculated in V2
+      },
+      
+      costs: {
+        totalGasCost: null, // Not tracked in simple simulation
+        harvestCount: null,
+        optimalHarvestFrequency: null,
+      },
     },
   };
   
@@ -282,7 +327,38 @@ export async function analyzeLPV2Position(
     console.log(JSON.stringify(analysisResult, null, 2));
   }
   
-  return analysisResult;
+  // Return backward-compatible format for existing code
+  const legacyResult: LPV2AnalysisResult = {
+    pair: analysisResult.config.pair,
+    initialInvestment: analysisResult.config.initialInvestment,
+    period: analysisResult.config.periodDays,
+    expectedFinalValue: analysisResult.analysis.returns.expectedFinalValue,
+    expectedReturn: analysisResult.analysis.returns.expectedReturn,
+    expectedReturnPercent: analysisResult.analysis.returns.expectedReturnPercent,
+    annualizedAPY: analysisResult.analysis.returns.annualizedAPY,
+    risk: result.stdDevReturn,
+    standardDeviation: analysisResult.analysis.distribution.stdDeviation,
+    medianVFinal: analysisResult.analysis.distribution.median,
+    probabilityOfLoss: analysisResult.analysis.risk.probabilityOfLoss,
+    probabilityOfProfit: analysisResult.analysis.risk.probabilityOfProfit,
+    worstCase5Percentile: analysisResult.analysis.distribution.percentile5,
+    bestCase5Percentile: analysisResult.analysis.distribution.percentile95,
+    percentile25: analysisResult.analysis.distribution.percentile25,
+    percentile75: analysisResult.analysis.distribution.percentile75,
+    valueAtRisk5: analysisResult.analysis.risk.valueAtRisk5,
+    mu: analysisResult.marketConditions.distributionParams.mu,
+    sigma: analysisResult.marketConditions.distributionParams.sigma,
+    dataSource: analysisResult.marketConditions.dataSource,
+    numSimulations: analysisResult.config.numSimulations,
+    poolInfo: {
+      name: analysisResult.marketConditions.poolName,
+      tvl: analysisResult.marketConditions.tvl,
+      volume24h: analysisResult.marketConditions.volume24h,
+      hasFarming: analysisResult.marketConditions.hasFarming,
+    },
+  };
+  
+  return legacyResult;
 }
 
 // ============================================================================
