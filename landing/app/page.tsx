@@ -368,7 +368,7 @@ export default function LandingPage() {
             <a href="#protocols" className="hover:text-zinc-200 transition-colors">Protocols</a>
           </div>
           <a
-            href="https://monorepo-five-nu.vercel.app"
+            href="https://flow-cap-dashboard.vercel.app"
             className="px-4 py-2 rounded-lg bg-orange-500 text-white text-sm font-medium hover:bg-orange-400 transition-colors"
           >
             Launch App
@@ -440,7 +440,7 @@ export default function LandingPage() {
             className="flex flex-col sm:flex-row items-center justify-center gap-3"
           >
             <a
-              href="https://monorepo-five-nu.vercel.app"
+              href="https://flow-cap-dashboard.vercel.app"
               className="group px-7 py-3 rounded-lg bg-orange-500 text-white font-medium text-sm flex items-center gap-2 hover:bg-orange-400 transition-colors glow-strong"
             >
               Launch Dashboard
@@ -747,7 +747,7 @@ export default function LandingPage() {
             </motion.p>
             <motion.div variants={fadeUp} custom={2} className="flex justify-center">
               <a
-                href="https://monorepo-five-nu.vercel.app"
+                href="https://flow-cap-dashboard.vercel.app"
                 className="group px-8 py-3.5 rounded-lg bg-orange-500 text-white font-medium flex items-center gap-2 hover:bg-orange-400 transition-colors glow-strong"
               >
                 Launch Dashboard
@@ -771,7 +771,7 @@ export default function LandingPage() {
             <a href="https://github.com/flowCap-ai/monorepo" target="_blank" rel="noopener noreferrer" className="hover:text-zinc-300 transition-colors">
               GitHub
             </a>
-            <a href="https://monorepo-five-nu.vercel.app" className="hover:text-zinc-300 transition-colors">
+            <a href="https://flow-cap-dashboard.vercel.app" className="hover:text-zinc-300 transition-colors">
               Dashboard
             </a>
             <span>BNB Chain Hackathon</span>
