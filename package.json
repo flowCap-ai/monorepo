@@ -10,6 +10,8 @@
     "start": "node dist/agents/index.js",
     "agent:start": "tsx agents/openclaw-runner.ts",
     "agent:dev": "tsx watch agents/openclaw-runner.ts",
+    "agent:serve": "tsx agents/server.ts",
+    "agent:serve:dev": "tsx watch agents/server.ts",
     "agent:test": "tsx scripts/test-openclaw-integration.ts",
     "test": "vitest",
     "test:skills": "vitest agents/skills",
@@ -52,20 +54,24 @@
   },
   "homepage": "https://github.com/flowCap-ai/monorepo#readme",
   "dependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.0",
+    "express": "^5.2.1",
     "openclaw": "^2026.2.9",
     "viem": "^2.21.0",
-    "yaml": "^2.4.0",
-    "dotenv": "^16.4.0"
+    "yaml": "^2.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.0",
-    "tsx": "^4.7.0",
-    "vitest": "^1.2.0",
-    "eslint": "^8.56.0",
     "@typescript-eslint/eslint-plugin": "^6.19.0",
     "@typescript-eslint/parser": "^6.19.0",
-    "prettier": "^3.2.0"
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,8 +1,10 @@
 /**
- * FlowCap Delegation API Route
+ * FlowCap Delegation API Route — SaaS compatible
  *
- * Receives delegation metadata from frontend and saves to the delegation folder
- * that the agent watches (~/.openclaw/flowcap-delegations/active.json).
+ * Receives delegation metadata from frontend and forwards it to the
+ * user's agent server (resolved via the Agent Registry).
+ *
+ * In local dev, also saves to ~/.openclaw/flowcap-delegations/ as fallback.
  *
  * SECURITY: Session key private material NEVER leaves the client.
  *           Only sessionAddress (public) + compressedSessionData are accepted.
@@ -12,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { proxyToAgent, getAgent } from '../../../lib/agentRegistry';
 
 // ─── Config ──────────────────────────────────────────────────────
 const DELEGATION_FOLDER = join(homedir(), '.openclaw', 'flowcap-delegations');
@@ -159,6 +162,28 @@ export async function POST(request: NextRequest) {
       smartAccountAddress,
       riskProfile,
     });
+
+    // ── Notify agent server via registry (non-blocking) ──────
+    const agent = getAgent(smartAccountAddress);
+    if (agent) {
+      try {
+        const agentRes = await proxyToAgent(
+          smartAccountAddress,
+          '/api/agent/initialize',
+          'POST',
+          { smartAccountAddress, riskProfile },
+        );
+        if (agentRes.ok) {
+          console.log('📡 Agent server notified of new delegation via registry');
+        } else {
+          console.warn('⚠️ Agent server responded with', agentRes.status);
+        }
+      } catch {
+        console.warn('⚠️ Remote agent unreachable — delegation saved locally as fallback');
+      }
+    } else {
+      console.warn('⚠️ No agent registered for', smartAccountAddress, '— delegation saved locally only');
+    }
 
     return NextResponse.json({
       success: true,
