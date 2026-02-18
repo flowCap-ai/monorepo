@@ -13,6 +13,7 @@
 import { useState, useEffect } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
 import { createSmartAccount, generateSessionKey, delegateSessionKey } from '../lib/biconomyClient';
+import { secureClearAll, secureStore, derivePasswordFromSignature } from '../lib/encryption';
 import { cn } from '../lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
