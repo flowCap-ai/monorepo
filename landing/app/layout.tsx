@@ -9,8 +9,9 @@ export const metadata: Metadata = {
   description:
     'AI-powered yield optimization on BNB Chain. One click, one signature, zero configuration. Secured by Biconomy ERC-4337 session keys.',
   icons: {
-    icon: '/fox logo final.svg',
-    shortcut: '/fox logo final.svg',
+    icon: '/favicon.ico',
+    shortcut: '/favicon.ico',
+    other: { rel: 'icon', url: '/favicon.svg', type: 'image/svg+xml' },
   },
   openGraph: {
     title: 'CustoFi — AI DeFi Wealth Manager',

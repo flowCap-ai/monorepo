@@ -9,8 +9,9 @@ export const metadata: Metadata = {
   title: 'CustoFi — Dashboard',
   description: 'AI-powered DeFi yield optimization on BNB Chain. Manage your autonomous agent.',
   icons: {
-    icon: '/fox logo final.svg',
-    shortcut: '/fox logo final.svg',
+    icon: '/favicon.ico',
+    shortcut: '/favicon.ico',
+    other: { rel: 'icon', url: '/favicon.svg', type: 'image/svg+xml' },
   },
 };
 

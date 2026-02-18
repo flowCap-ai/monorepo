@@ -12,7 +12,7 @@ export function FlowCapLogo({
 }) {
   return (
     <img
-      src="/HashFox_logo.jpg"
+      src="/logo.jpg"
       alt="CustoFi"
       width={size}
       height={size}
