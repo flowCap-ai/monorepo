@@ -12,6 +12,8 @@ const nextConfig = {
     config.externals.push('pino-pretty', 'lokijs', 'encoding');
     // Alias React Native module used by @metamask/sdk browser bundle
     config.resolve.alias['@react-native-async-storage/async-storage'] = false;
+    // Fix porto/internal export mismatch with wagmi connectors
+    config.resolve.alias['porto/internal'] = false;
     // Allow imports from ../agents/ to resolve node_modules from this project
     config.resolve.modules = [
       path.resolve(__dirname, 'node_modules'),

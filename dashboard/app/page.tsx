@@ -1,10 +1,13 @@
 'use client';
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useAccount } from 'wagmi';
 import FlowCapDashboard from '../components/FlowCapDashboard';
+import { AgentConnector } from '../components/AgentConnector';
 import { FlowCapWordmark, FlowCapLogo } from '../components/FlowCapLogo';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { Card, CardContent } from '../components/ui/card';
+import { useAgentEvents } from '../hooks/useAgentEvents';
 import {
   Shield,
   Brain,
@@ -55,6 +58,9 @@ function StepItem({ number, title, desc }: { number: string; title: string; desc
 }
 
 export default function Home() {
+  const { address } = useAccount();
+  const agent = useAgentEvents(address);
+
   return (
     <div className="min-h-screen bg-bg bg-grid">
       {/* Ambient glow */}
@@ -106,6 +112,17 @@ export default function Home() {
             icon={Link2}
             title="On-Chain Verified"
             description="Every transaction verifiable on BscScan. Full transparency, pause or stop anytime."
+          />
+        </div>
+
+        {/* ─── AGENT CONNECTION ─── */}
+        <div className="mb-4">
+          <AgentConnector
+            walletAddress={address}
+            connection={agent.connection}
+            connected={agent.connected}
+            onConnect={agent.connectAgent}
+            onDisconnect={agent.disconnectAgent}
           />
         </div>
 

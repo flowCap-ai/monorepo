@@ -1,26 +1,26 @@
 /**
- * OpenClaw Agent API Route
- * Connects the dashboard to the real OpenClaw agent
+ * OpenClaw Agent API Route — Multi-tenant Proxy (SaaS)
+ *
+ * Routes requests to the correct user's agent server based on their
+ * wallet address. The agent URL is resolved via the Agent Registry.
+ *
+ * Architecture:
+ *   Browser → POST /api/agent { wallet, action, ... }
+ *           → Dashboard resolves wallet → agentUrl via Registry
+ *           → Proxy to user's agent server (local, VPS, cloud)
  *
  * SECURITY:
- *  - API key authentication (FLOWCAP_API_SECRET)
+ *  - Per-user agent auth via registry apiSecret
  *  - Rate limiting: 20 req/min per IP
- *  - Session private key is NEVER stored in process.env
- *  - Only 'initialize', 'scan', 'status' actions allowed
+ *  - Session private key is NEVER accepted
+ *  - Only 'initialize', 'scan', 'status', 'start', 'stop' actions allowed
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { proxyToAgent as registryProxy, getAgent } from '../../../lib/agentRegistry';
 
-// Import the actual OpenClaw agent from /agents
-import {
-  initializeAgent,
-  scanAndOptimize,
-  getAgentStatus
-} from '../../../../agents/index';
-
-// ─── Auth ────────────────────────────────────────────────────
-const API_SECRET = process.env.FLOWCAP_API_SECRET || '';
-const VALID_ACTIONS = ['initialize', 'scan', 'status'] as const;
+// ─── Config ──────────────────────────────────────────────────
+const VALID_ACTIONS = ['initialize', 'scan', 'status', 'start', 'stop'] as const;
 
 // ─── Rate limiter ────────────────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; reset: number }>();
@@ -50,136 +50,165 @@ function getClientIp(request: NextRequest): string {
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const VALID_RISK_PROFILES = ['low', 'medium', 'high'] as const;
 
+// ─── POST handler ────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
-    // ── Rate limiting ──────────────────────────────────────
     if (isRateLimited(getClientIp(request))) {
       return NextResponse.json(
         { error: 'Too many requests', success: false },
-        { status: 429 }
+        { status: 429 },
       );
     }
 
-    // ── Optional API key auth ──────────────────────────────
-    if (API_SECRET) {
-      const authHeader = request.headers.get('authorization');
-      if (!authHeader || authHeader !== `Bearer ${API_SECRET}`) {
-        return NextResponse.json(
-          { error: 'Unauthorized', success: false },
-          { status: 401 }
-        );
-      }
+    const body = await request.json();
+    const { action, wallet, smartAccountAddress, riskProfile } = body;
+
+    // ── Wallet identification (required for multi-tenant) ──
+    const userWallet = wallet || smartAccountAddress;
+    if (!userWallet || !ETH_ADDRESS_RE.test(userWallet)) {
+      return NextResponse.json(
+        { error: 'wallet address is required to identify your agent', success: false },
+        { status: 400 },
+      );
     }
 
-    const body = await request.json();
-    const { action, smartAccountAddress, riskProfile } = body;
+    // ── Check agent is registered ──────────────────────────
+    const agent = getAgent(userWallet);
+    if (!agent) {
+      return NextResponse.json(
+        {
+          error: 'No agent connected. Go to Settings to connect your OpenClaw agent.',
+          code: 'AGENT_NOT_REGISTERED',
+          success: false,
+        },
+        { status: 404 },
+      );
+    }
 
     // ── Action validation ──────────────────────────────────
     if (!action || !VALID_ACTIONS.includes(action)) {
       return NextResponse.json(
         { error: `Invalid action. Allowed: ${VALID_ACTIONS.join(', ')}` },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    // ── SECURITY: Reject if client sends a private key ─────
+    // ── SECURITY: Reject private keys ──────────────────────
     if ('sessionPrivateKey' in body) {
-      console.warn('🚫 Client attempted to send sessionPrivateKey via agent API — rejected');
       return NextResponse.json(
         { error: 'sessionPrivateKey must not be sent to the server', success: false },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
+    // ── Route to user's agent server ───────────────────────
     switch (action) {
       case 'initialize': {
         if (!smartAccountAddress || !riskProfile) {
           return NextResponse.json(
             { error: 'Missing smartAccountAddress or riskProfile', success: false },
-            { status: 400 }
+            { status: 400 },
           );
         }
-
-        // Validate address format
-        if (!ETH_ADDRESS_RE.test(smartAccountAddress)) {
-          return NextResponse.json(
-            { error: 'Invalid smartAccountAddress format', success: false },
-            { status: 400 }
-          );
-        }
-
-        // Validate risk profile
         if (!VALID_RISK_PROFILES.includes(riskProfile)) {
           return NextResponse.json(
             { error: `Invalid riskProfile. Allowed: ${VALID_RISK_PROFILES.join(', ')}`, success: false },
-            { status: 400 }
+            { status: 400 },
           );
         }
 
-        await initializeAgent(smartAccountAddress, riskProfile);
-
-        return NextResponse.json({
-          success: true,
-          message: 'Agent initialized successfully',
+        const initRes = await registryProxy(userWallet, '/api/agent/initialize', 'POST', {
+          smartAccountAddress,
+          riskProfile,
         });
+        const initData = await initRes.json();
+        return NextResponse.json(initData, { status: initRes.status });
       }
 
       case 'scan': {
-        const scanResult = await scanAndOptimize();
-        return NextResponse.json({
-          success: true,
-          result: scanResult,
-        });
+        const scanRes = await registryProxy(userWallet, '/api/agent/scan', 'POST');
+        const scanData = await scanRes.json();
+        return NextResponse.json(scanData, { status: scanRes.status });
       }
 
       case 'status': {
-        const status = getAgentStatus();
-        return NextResponse.json({
-          success: true,
-          status,
-        });
+        const statusRes = await registryProxy(userWallet, '/api/agent/status');
+        const statusData = await statusRes.json();
+        return NextResponse.json(statusData, { status: statusRes.status });
+      }
+
+      case 'start': {
+        const startRes = await registryProxy(userWallet, '/api/agent/start', 'POST');
+        const startData = await startRes.json();
+        return NextResponse.json(startData, { status: startRes.status });
+      }
+
+      case 'stop': {
+        const stopRes = await registryProxy(userWallet, '/api/agent/stop', 'POST');
+        const stopData = await stopRes.json();
+        return NextResponse.json(stopData, { status: stopRes.status });
       }
 
       default:
         return NextResponse.json(
           { error: `Unknown action: ${action}`, success: false },
-          { status: 400 }
+          { status: 400 },
         );
     }
   } catch (error) {
-    console.error('Agent API error:', error);
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    const isUnreachable = msg.includes('fetch') || msg.includes('abort') || msg.includes('No agent registered');
+    console.error('Agent API proxy error:', msg);
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        success: false,
-      },
-      { status: 500 }
+      { error: isUnreachable ? 'Agent server unreachable. Check your agent connection.' : msg, success: false },
+      { status: isUnreachable ? 503 : 500 },
     );
   }
 }
 
+// ─── GET handler — requires ?wallet=0x... ────────────────────
 export async function GET(request: NextRequest) {
   try {
-    // Rate limit GET as well
     if (isRateLimited(getClientIp(request))) {
       return NextResponse.json(
         { error: 'Too many requests', success: false },
-        { status: 429 }
+        { status: 429 },
       );
     }
 
-    const status = getAgentStatus();
-    return NextResponse.json({
-      success: true,
-      status,
-    });
+    const wallet = request.nextUrl.searchParams.get('wallet');
+    if (!wallet || !ETH_ADDRESS_RE.test(wallet)) {
+      return NextResponse.json(
+        { error: 'wallet query parameter required', success: false },
+        { status: 400 },
+      );
+    }
+
+    const agent = getAgent(wallet);
+    if (!agent) {
+      return NextResponse.json({
+        success: true,
+        registered: false,
+        status: null,
+      });
+    }
+
+    try {
+      const statusRes = await registryProxy(wallet, '/api/agent/status');
+      const statusData = await statusRes.json();
+      return NextResponse.json({ ...statusData, registered: true }, { status: statusRes.status });
+    } catch {
+      return NextResponse.json({
+        success: true,
+        registered: true,
+        status: null,
+        agentOffline: true,
+      });
+    }
   } catch (error) {
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        success: false,
-      },
-      { status: 500 }
+      { error: error instanceof Error ? error.message : 'Unknown error', success: false },
+      { status: 500 },
     );
   }
 }

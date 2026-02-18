@@ -171,7 +171,7 @@ SECURITY GUARANTEES:
 
 OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
 
-      await signMessageAsync({ message });
+      const walletSignature = await signMessageAsync({ message });
 
       // Step 3: Smart Sessions delegation (typed-data signature — no gas)
       setDelegationStep('Granting session permissions...');
@@ -216,8 +216,10 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
       setDelegationProgress(100);
       setDelegationStep('Delegation complete!');
 
-      // Store private key locally only — never sent to server
-      localStorage.setItem('flowcap-session-key', sessionKeyData.sessionPrivateKey);
+      // Encrypt private key in localStorage — never stored in plaintext
+      const encPassword = derivePasswordFromSignature(walletSignature);
+      await secureStore('session-key', sessionKeyData.sessionPrivateKey, encPassword);
+
       localStorage.setItem('flowcap-session-address', sessionKeyData.sessionAddress);
       localStorage.setItem('flowcap-smart-account', smartAccount.address);
       localStorage.setItem('flowcap-risk-profile', riskProfile);
@@ -247,12 +249,7 @@ OpenClaw will monitor 24/7. You can close this dashboard anytime.`;
   };
 
   const resetDelegation = () => {
-    localStorage.removeItem('flowcap-delegated');
-    localStorage.removeItem('flowcap-session-key');
-    localStorage.removeItem('flowcap-session-address');
-    localStorage.removeItem('flowcap-smart-account');
-    localStorage.removeItem('flowcap-risk-profile');
-    localStorage.removeItem('flowcap-max-investment');
+    secureClearAll();
     localStorage.removeItem('flowcap-delegation-tx');
     setIsDelegated(false);
     setIsMonitoring(false);
