@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
     });
 
     // ── Notify agent server via registry (non-blocking) ──────
-    const agent = getAgent(smartAccountAddress);
+    const agent = await getAgent(smartAccountAddress);
     if (agent) {
       try {
         const agentRes = await proxyToAgent(

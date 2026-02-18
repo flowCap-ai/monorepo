@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const agent = getAgent(wallet);
+  const agent = await getAgent(wallet);
 
   if (!agent) {
     return new Response(

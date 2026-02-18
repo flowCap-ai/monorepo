@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const registration = registerAgent(walletAddress, agentUrl, apiSecret || '', label);
+    const registration = await registerAgent(walletAddress, agentUrl, apiSecret || '', label);
 
     // Immediately health check
     const checked = await healthCheckAgent(walletAddress);
@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const agent = getAgent(wallet);
+  const agent = await getAgent(wallet);
   if (!agent) {
     return NextResponse.json({
       success: true,
@@ -123,7 +123,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const removed = removeAgent(walletAddress);
+    const removed = await removeAgent(walletAddress);
     return NextResponse.json({ success: true, removed });
   } catch {
     return NextResponse.json(

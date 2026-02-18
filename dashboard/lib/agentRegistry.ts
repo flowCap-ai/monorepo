@@ -1,83 +1,54 @@
 /**
- * Agent Registry — SaaS model
+ * Agent Registry — Redis backed (persistent across serverless invocations)
  *
- * Maps wallet addresses to their agent server URLs.
- * Each user's OpenClaw agent can run on:
- *   - Their local machine (via tunnel like ngrok, cloudflared)
- *   - A VPS / Cloud VM
- *   - A hosted FlowCap agent instance (future)
- *
- * In production, this would be backed by a database.
- * For hackathon, we use in-memory + filesystem persistence.
+ * Uses REDIS_URL env var (Redis Cloud, Upstash, etc.)
+ * Falls back to in-memory map when REDIS_URL is not set (local dev).
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import Redis from 'ioredis';
 
 // ─── Types ───────────────────────────────────────────────────
 
 export interface AgentRegistration {
-  /** Wallet address (checksummed or lower) */
   walletAddress: string;
-  /** Full URL to agent server, e.g. https://my-agent.example.com:3002 */
   agentUrl: string;
-  /** Shared secret for authenticating dashboard→agent requests */
   apiSecret: string;
-  /** When the agent was registered */
   registeredAt: number;
-  /** Last successful health check */
   lastHealthCheck: number | null;
-  /** Current status */
   status: 'online' | 'offline' | 'unknown';
-  /** Agent display name (optional) */
   label?: string;
 }
 
-// ─── Persistence ─────────────────────────────────────────────
+// ─── Redis client (singleton) ────────────────────────────────
 
-const REGISTRY_DIR = join(homedir(), '.flowcap');
-const REGISTRY_FILE = join(REGISTRY_DIR, 'agent-registry.json');
+let redisClient: Redis | null = null;
 
-/** In-memory registry (wallet → agent info) */
-const registry = new Map<string, AgentRegistration>();
-
-/** Load from disk on startup */
-function loadFromDisk(): void {
-  try {
-    if (existsSync(REGISTRY_FILE)) {
-      const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8'));
-      if (Array.isArray(data)) {
-        for (const entry of data) {
-          registry.set(normalizeAddress(entry.walletAddress), entry);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Failed to load agent registry:', err);
+function getRedis(): Redis | null {
+  if (!process.env.REDIS_URL) return null;
+  if (!redisClient) {
+    redisClient = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      lazyConnect: true,
+    });
+    redisClient.on('error', (err) => {
+      console.warn('Redis error:', err.message);
+    });
   }
+  return redisClient;
 }
 
-/** Persist to disk */
-function saveToDisk(): void {
-  try {
-    if (!existsSync(REGISTRY_DIR)) {
-      mkdirSync(REGISTRY_DIR, { recursive: true });
-    }
-    const data = Array.from(registry.values());
-    writeFileSync(REGISTRY_FILE, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.warn('⚠️ Failed to save agent registry:', err);
-  }
-}
+// ─── In-memory fallback (local dev without Redis) ────────────
 
-// Load on module init
-loadFromDisk();
+const memoryRegistry = new Map<string, AgentRegistration>();
 
 // ─── Helpers ─────────────────────────────────────────────────
 
 function normalizeAddress(addr: string): string {
   return addr.toLowerCase().trim();
+}
+
+function redisKey(walletAddress: string): string {
+  return `flowcap:agent:${normalizeAddress(walletAddress)}`;
 }
 
 function validateUrl(url: string): boolean {
@@ -91,27 +62,22 @@ function validateUrl(url: string): boolean {
 
 // ─── Public API ──────────────────────────────────────────────
 
-/**
- * Register (or update) an agent for a wallet address.
- */
-export function registerAgent(
+export async function registerAgent(
   walletAddress: string,
   agentUrl: string,
   apiSecret: string = '',
   label?: string,
-): AgentRegistration {
+): Promise<AgentRegistration> {
   if (!walletAddress || !/^0x[0-9a-fA-F]{40}$/.test(walletAddress)) {
     throw new Error('Invalid wallet address');
   }
 
-  // Normalize URL — strip trailing slash
-  let normalizedUrl = agentUrl.trim().replace(/\/+$/, '');
+  const normalizedUrl = agentUrl.trim().replace(/\/+$/, '');
   if (!validateUrl(normalizedUrl)) {
     throw new Error('Invalid agent URL. Must be http:// or https://');
   }
 
-  const key = normalizeAddress(walletAddress);
-  const existing = registry.get(key);
+  const existing = await getAgent(walletAddress);
 
   const registration: AgentRegistration = {
     walletAddress,
@@ -123,40 +89,58 @@ export function registerAgent(
     label,
   };
 
-  registry.set(key, registration);
-  saveToDisk();
+  const redis = getRedis();
+  if (redis) {
+    // TTL: 30 days (auto-expires stale registrations)
+    await redis.set(redisKey(walletAddress), JSON.stringify(registration), 'EX', 60 * 60 * 24 * 30);
+  } else {
+    memoryRegistry.set(normalizeAddress(walletAddress), registration);
+  }
 
   return registration;
 }
 
-/**
- * Get agent registration for a wallet.
- */
-export function getAgent(walletAddress: string): AgentRegistration | null {
-  return registry.get(normalizeAddress(walletAddress)) ?? null;
+export async function getAgent(walletAddress: string): Promise<AgentRegistration | null> {
+  const redis = getRedis();
+  if (redis) {
+    const data = await redis.get(redisKey(walletAddress));
+    if (!data) return null;
+    try {
+      return JSON.parse(data) as AgentRegistration;
+    } catch {
+      return null;
+    }
+  }
+  return memoryRegistry.get(normalizeAddress(walletAddress)) ?? null;
 }
 
-/**
- * Remove agent registration.
- */
-export function removeAgent(walletAddress: string): boolean {
-  const removed = registry.delete(normalizeAddress(walletAddress));
-  if (removed) saveToDisk();
-  return removed;
+export async function removeAgent(walletAddress: string): Promise<boolean> {
+  const redis = getRedis();
+  if (redis) {
+    const deleted = await redis.del(redisKey(walletAddress));
+    return deleted > 0;
+  }
+  return memoryRegistry.delete(normalizeAddress(walletAddress));
 }
 
-/**
- * List all registered agents.
- */
-export function listAgents(): AgentRegistration[] {
-  return Array.from(registry.values());
+export async function listAgents(): Promise<AgentRegistration[]> {
+  const redis = getRedis();
+  if (redis) {
+    const keys = await redis.keys('flowcap:agent:*');
+    if (!keys.length) return [];
+    const results = await Promise.all(keys.map(k => redis.get(k)));
+    return results
+      .filter((r): r is string => r !== null)
+      .map(r => {
+        try { return JSON.parse(r) as AgentRegistration; } catch { return null; }
+      })
+      .filter((r): r is AgentRegistration => r !== null);
+  }
+  return Array.from(memoryRegistry.values());
 }
 
-/**
- * Health check a specific agent. Updates status in registry.
- */
 export async function healthCheckAgent(walletAddress: string): Promise<AgentRegistration | null> {
-  const agent = getAgent(walletAddress);
+  const agent = await getAgent(walletAddress);
   if (!agent) return null;
 
   try {
@@ -174,31 +158,29 @@ export async function healthCheckAgent(walletAddress: string): Promise<AgentRegi
     });
     clearTimeout(timeout);
 
-    if (res.ok) {
-      agent.status = 'online';
-      agent.lastHealthCheck = Date.now();
-    } else {
-      agent.status = 'offline';
-    }
+    agent.status = res.ok ? 'online' : 'offline';
+    agent.lastHealthCheck = Date.now();
   } catch {
     agent.status = 'offline';
   }
 
-  saveToDisk();
+  const redis = getRedis();
+  if (redis) {
+    await redis.set(redisKey(walletAddress), JSON.stringify(agent), 'EX', 60 * 60 * 24 * 30);
+  } else {
+    memoryRegistry.set(normalizeAddress(walletAddress), agent);
+  }
+
   return agent;
 }
 
-/**
- * Proxy a request to a user's agent server.
- * Returns the raw Response from the agent.
- */
 export async function proxyToAgent(
   walletAddress: string,
   path: string,
   method: 'GET' | 'POST' = 'GET',
   body?: Record<string, unknown>,
 ): Promise<Response> {
-  const agent = getAgent(walletAddress);
+  const agent = await getAgent(walletAddress);
   if (!agent) {
     throw new Error('No agent registered for this wallet. Connect your agent first.');
   }
@@ -222,16 +204,25 @@ export async function proxyToAgent(
     });
     clearTimeout(timeout);
 
-    // Update health status
     agent.status = 'online';
     agent.lastHealthCheck = Date.now();
-    saveToDisk();
+    const redis = getRedis();
+    if (redis) {
+      await redis.set(redisKey(walletAddress), JSON.stringify(agent), 'EX', 60 * 60 * 24 * 30);
+    } else {
+      memoryRegistry.set(normalizeAddress(walletAddress), agent);
+    }
 
     return res;
   } catch (err) {
     clearTimeout(timeout);
     agent.status = 'offline';
-    saveToDisk();
+    const redis = getRedis();
+    if (redis) {
+      await redis.set(redisKey(walletAddress), JSON.stringify(agent), 'EX', 60 * 60 * 24 * 30);
+    } else {
+      memoryRegistry.set(normalizeAddress(walletAddress), agent);
+    }
     throw err;
   }
 }

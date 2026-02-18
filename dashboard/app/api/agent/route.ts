@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Check agent is registered ──────────────────────────
-    const agent = getAgent(userWallet);
+    const agent = await getAgent(userWallet);
     if (!agent) {
       return NextResponse.json(
         {
@@ -184,7 +184,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const agent = getAgent(wallet);
+    const agent = await getAgent(wallet);
     if (!agent) {
       return NextResponse.json({
         success: true,
