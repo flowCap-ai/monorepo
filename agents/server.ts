@@ -39,25 +39,42 @@ const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1
 const DEVICE_AUTH_PATH = join(homedir(), '.openclaw', 'identity', 'device-auth.json');
 const API_SECRET = process.env.FLOWCAP_API_SECRET || '';
 
-// ─── SSE Event Bus ───────────────────────────────────────────
+// ─── SSE Event Bus + Polling Buffer ──────────────────────────
 type SSEClient = {
   id: string;
   res: express.Response;
 };
 
+interface BufferedEvent {
+  id: number;
+  event: string;
+  data: Record<string, unknown> & { timestamp: string };
+}
+
 const sseClients: SSEClient[] = [];
 let eventCounter = 0;
 
-/** Broadcast an event to all connected SSE clients */
+// Ring buffer for polling clients (Vercel-compatible)
+const EVENT_BUFFER_SIZE = 100;
+const eventBuffer: BufferedEvent[] = [];
+
+/** Broadcast an event to all SSE clients AND add to polling buffer */
 export function broadcastEvent(event: string, data: Record<string, unknown>): void {
   eventCounter++;
-  const payload = JSON.stringify({ ...data, timestamp: new Date().toISOString() });
+  const timestamped = { ...data, timestamp: new Date().toISOString() };
+  const payload = JSON.stringify(timestamped);
   const message = `id: ${eventCounter}\nevent: ${event}\ndata: ${payload}\n\n`;
+
+  // Add to polling buffer
+  eventBuffer.push({ id: eventCounter, event, data: timestamped });
+  if (eventBuffer.length > EVENT_BUFFER_SIZE) {
+    eventBuffer.splice(0, eventBuffer.length - EVENT_BUFFER_SIZE);
+  }
 
   // Log event
   console.log(`📡 SSE [${event}] → ${sseClients.length} client(s)`);
 
-  // Send to all clients, remove dead ones
+  // Send to all SSE clients, remove dead ones
   for (let i = sseClients.length - 1; i >= 0; i--) {
     try {
       sseClients[i].res.write(message);
@@ -245,7 +262,19 @@ app.post('/api/agent/register', authMiddleware, async (req, res) => {
   }
 });
 
-/** SSE — real-time agent events stream */
+/** Polling endpoint — returns buffered events as JSON (Vercel-compatible) */
+app.get('/api/agent/events/poll', authMiddleware, (req, res) => {
+  const since = parseInt(req.query.since as string) || 0;
+  const newEvents = eventBuffer.filter(e => e.id > since);
+  res.json({
+    success: true,
+    events: newEvents,
+    lastEventId: eventCounter,
+    status: { ...getAgentStatus(), openclawGateway: gatewayConnected },
+  });
+});
+
+/** SSE — real-time agent events stream (direct connections only) */
 app.get('/api/agent/events', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -374,6 +403,7 @@ async function start() {
     console.log(`   Health:     GET  http://localhost:${PORT}/health`);
     console.log(`   Status:     GET  http://localhost:${PORT}/api/agent/status`);
     console.log(`   Events:     GET  http://localhost:${PORT}/api/agent/events  (SSE)`);
+    console.log(`   Poll:       GET  http://localhost:${PORT}/api/agent/events/poll  (JSON)`);
     console.log(`   Initialize: POST http://localhost:${PORT}/api/agent/initialize`);
     console.log(`   Scan:       POST http://localhost:${PORT}/api/agent/scan`);
     console.log(`   Start:      POST http://localhost:${PORT}/api/agent/start`);

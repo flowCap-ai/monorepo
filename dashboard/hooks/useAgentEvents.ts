@@ -70,7 +70,6 @@ export function useAgentEvents(walletAddress?: string): UseAgentEventsReturn {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [lastScan, setLastScan] = useState<UseAgentEventsReturn['lastScan']>(null);
   const [lastError, setLastError] = useState<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const eventIdRef = useRef(0);
 
   const wallet = walletAddress?.toLowerCase();
@@ -113,137 +112,77 @@ export function useAgentEvents(walletAddress?: string): UseAgentEventsReturn {
     checkRegistration();
   }, [wallet]);
 
-  // ─── Connect SSE via dashboard proxy ─────────────────────
+  // ─── Poll events via dashboard proxy (Vercel-compatible) ──
+  const lastEventIdRef = useRef(0);
+
   useEffect(() => {
     if (typeof window === 'undefined' || !wallet || !connection.registered) return;
 
-    let retryTimeout: ReturnType<typeof setTimeout>;
-    let es: EventSource;
+    let active = true;
 
-    function connect() {
-      // SSE goes through the dashboard API proxy, NOT directly to agent
-      es = new EventSource(`/api/agent/events?wallet=${wallet}`);
-      eventSourceRef.current = es;
+    async function poll() {
+      try {
+        const res = await fetch(
+          `/api/agent/events?wallet=${wallet}&since=${lastEventIdRef.current}`,
+        );
+        if (!res.ok) {
+          setConnected(false);
+          if (res.status === 404) {
+            setConnection(prev => ({ ...prev, status: 'offline' }));
+          }
+          return;
+        }
 
-      es.addEventListener('connected', (e) => {
+        const data = await res.json();
+        if (!data.success) return;
+
         setConnected(true);
-        try {
-          const data = JSON.parse((e as MessageEvent).data);
-          setStatus(data);
-        } catch {}
-      });
+        setConnection(prev => ({ ...prev, status: 'online' }));
 
-      es.addEventListener('proxy_connected', (e) => {
-        setConnected(true);
-        addEvent('proxy_connected', JSON.parse((e as MessageEvent).data));
-      });
+        // Update status from poll response
+        if (data.status) setStatus(data.status);
 
-      es.addEventListener('proxy_disconnected', (e) => {
+        // Track last event ID for next poll
+        if (data.lastEventId) lastEventIdRef.current = data.lastEventId;
+
+        // Process new events
+        if (Array.isArray(data.events)) {
+          for (const evt of data.events) {
+            addEvent(evt.event, evt.data);
+
+            // Handle specific event types
+            if (evt.event === 'scan_completed') {
+              setLastScan({ action: evt.data.action, details: evt.data.details, txHash: evt.data.txHash });
+              setLastError(null);
+            } else if (evt.event === 'scan_error' || evt.event === 'agent_error') {
+              setLastError(evt.data.error as string);
+            } else if (evt.event === 'gateway_connected') {
+              setStatus(prev => prev ? { ...prev, openclawGateway: true } : prev);
+            } else if (evt.event === 'gateway_disconnected') {
+              setStatus(prev => prev ? { ...prev, openclawGateway: false } : prev);
+            }
+          }
+        }
+      } catch {
         setConnected(false);
-        addEvent('proxy_disconnected', JSON.parse((e as MessageEvent).data));
-      });
-
-      es.addEventListener('proxy_error', (e) => {
-        const data = JSON.parse((e as MessageEvent).data);
-        addEvent('proxy_error', data);
-        setLastError(data.error as string);
-      });
-
-      es.addEventListener('scan_started', (e) => {
-        addEvent('scan_started', JSON.parse((e as MessageEvent).data));
-      });
-
-      es.addEventListener('scan_completed', (e) => {
-        const data = JSON.parse((e as MessageEvent).data);
-        addEvent('scan_completed', data);
-        setLastScan({ action: data.action, details: data.details, txHash: data.txHash });
-        setLastError(null);
-      });
-
-      es.addEventListener('scan_error', (e) => {
-        const data = JSON.parse((e as MessageEvent).data);
-        addEvent('scan_error', data);
-        setLastError(data.error as string);
-      });
-
-      es.addEventListener('agent_initialized', (e) => {
-        addEvent('agent_initialized', JSON.parse((e as MessageEvent).data));
-      });
-
-      es.addEventListener('agent_starting', (e) => {
-        addEvent('agent_starting', JSON.parse((e as MessageEvent).data));
-      });
-
-      es.addEventListener('agent_stopped', (e) => {
-        addEvent('agent_stopped', JSON.parse((e as MessageEvent).data));
-      });
-
-      es.addEventListener('agent_error', (e) => {
-        const data = JSON.parse((e as MessageEvent).data);
-        addEvent('agent_error', data);
-        setLastError(data.error as string);
-      });
-
-      es.addEventListener('gateway_connected', (e) => {
-        addEvent('gateway_connected', JSON.parse((e as MessageEvent).data));
-        setStatus(prev => prev ? { ...prev, openclawGateway: true } : prev);
-      });
-
-      es.addEventListener('gateway_disconnected', (e) => {
-        addEvent('gateway_disconnected', JSON.parse((e as MessageEvent).data));
-        setStatus(prev => prev ? { ...prev, openclawGateway: false } : prev);
-      });
-
-      es.addEventListener('error', (e) => {
-        try {
-          const data = JSON.parse((e as MessageEvent).data);
-          setLastError(data.error as string);
-          addEvent('error', data);
-        } catch {}
-      });
-
-      es.onmessage = (e) => {
-        try { addEvent('message', JSON.parse(e.data)); } catch {}
-      };
-
-      es.onerror = () => {
-        setConnected(false);
-        es.close();
-        retryTimeout = setTimeout(connect, 5000);
-      };
+        setConnection(prev => ({ ...prev, status: 'offline' }));
+      }
     }
 
-    connect();
+    // Initial poll immediately
+    poll();
+
+    // Then poll every 3 seconds
+    const interval = setInterval(() => {
+      if (active) poll();
+    }, 3000);
 
     return () => {
-      clearTimeout(retryTimeout);
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
+      active = false;
+      clearInterval(interval);
       setConnected(false);
     };
   }, [wallet, connection.registered, addEvent]);
-
-  // ─── Periodic status fetch (via dashboard proxy) ─────────
-  useEffect(() => {
-    if (!wallet || !connection.registered) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/agent?wallet=${wallet}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status) setStatus(data.status);
-          setConnection(prev => ({ ...prev, status: 'online' }));
-        }
-      } catch {
-        setConnection(prev => ({ ...prev, status: 'offline' }));
-      }
-    }, 15000);
-
-    return () => clearInterval(interval);
-  }, [wallet, connection.registered]);
 
   // ─── Actions ─────────────────────────────────────────────
 
