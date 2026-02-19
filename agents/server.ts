@@ -34,7 +34,7 @@ import {
 } from './index.js';
 
 // ─── Config ──────────────────────────────────────────────────
-const PORT = parseInt(process.env.AGENT_SERVER_PORT || '3002');
+const PORT = parseInt(process.env.PORT || process.env.AGENT_SERVER_PORT || '3002');
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789';
 const DEVICE_AUTH_PATH = join(homedir(), '.openclaw', 'identity', 'device-auth.json');
 const API_SECRET = process.env.FLOWCAP_API_SECRET || '';
