@@ -113,7 +113,7 @@ async function connectToOpenClaw(): Promise<boolean> {
             params: {
               minProtocol: 3,
               maxProtocol: 3,
-              client: { id: 'flowcap-agent', version: '1.0.0', platform: 'server', mode: 'operator' },
+              client: { id: 'gateway-client', version: '1.0.0', platform: 'server', mode: 'backend' },
               role: 'operator',
               scopes: ['operator.read', 'operator.write'],
               auth: { token },
