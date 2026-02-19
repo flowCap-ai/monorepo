@@ -1,10 +1,10 @@
-# FlowCap Monorepo
+# CustoFi Monorepo
 
-Complete setup for FlowCap - Autonomous DeFi Wealth Manager on BNB Chain
+Complete setup for CustoFi - Autonomous DeFi Wealth Manager on BNB Chain
 
 ## Overview
 
-FlowCap is an AI-powered DeFi yield optimizer that autonomously manages liquidity provider (LP) positions on PancakeSwap V2. It uses account abstraction (ERC-4337) with Biconomy for gasless transactions and session keys for secure automated trading.
+CustoFi is an AI-powered DeFi yield optimizer that autonomously manages liquidity provider (LP) positions on PancakeSwap V2. It uses account abstraction (ERC-4337) with Biconomy for gasless transactions and session keys for secure automated trading.
 
 ## Features
 
