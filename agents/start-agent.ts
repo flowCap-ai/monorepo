@@ -43,9 +43,14 @@ function loadSoulPrompt(): string {
 }
 
 /**
- * Load operator token for OpenClaw Gateway authentication
+ * Load gateway auth token.
+ * Priority: OPENCLAW_GATEWAY_TOKEN env  →  device-auth.json operator token
  */
-function loadOperatorToken(): string | null {
+function loadGatewayToken(): string | null {
+  // 1. Explicit env var (recommended — matches OpenClaw's own convention)
+  if (process.env.OPENCLAW_GATEWAY_TOKEN) return process.env.OPENCLAW_GATEWAY_TOKEN;
+
+  // 2. Fallback: device-auth operator token
   try {
     if (!existsSync(DEVICE_AUTH_PATH)) {
       console.warn('⚠️  Device auth not found at:', DEVICE_AUTH_PATH);
@@ -55,7 +60,7 @@ function loadOperatorToken(): string | null {
     const auth = JSON.parse(readFileSync(DEVICE_AUTH_PATH, 'utf-8'));
     return auth.tokens?.operator?.token || null;
   } catch (error) {
-    console.error('❌ Failed to load operator token:', error);
+    console.error('❌ Failed to load gateway token:', error);
     return null;
   }
 }
@@ -85,16 +90,16 @@ function connectToGateway(): Promise<WebSocket> {
           challengeReceived = true;
           console.log('🔐 Received connect challenge, responding...');
 
-          // Load operator token
-          const operatorToken = loadOperatorToken();
-          if (!operatorToken) {
-            console.error('❌ Cannot connect without operator token');
+          // Load gateway auth token
+          const gatewayToken = loadGatewayToken();
+          if (!gatewayToken) {
+            console.error('❌ Cannot connect without gateway token (set OPENCLAW_GATEWAY_TOKEN)');
             ws.close();
-            reject(new Error('Operator token not found'));
+            reject(new Error('Gateway token not found'));
             return;
           }
 
-          console.log(`🔑 Using operator token: ${operatorToken.slice(0, 8)}...`);
+          console.log(`🔑 Using gateway token: ${gatewayToken.slice(0, 8)}...`);
 
           // Official OpenClaw Gateway Protocol format from docs.openclaw.ai
           const connectParams = {
@@ -112,7 +117,7 @@ function connectToGateway(): Promise<WebSocket> {
             commands: [],
             permissions: {},
             auth: {
-              token: operatorToken,
+              token: gatewayToken,
             },
             locale: 'en-US',
             userAgent: 'flowcap-agent/1.0.0',

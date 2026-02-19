@@ -71,7 +71,15 @@ export function broadcastEvent(event: string, data: Record<string, unknown>): vo
 let openclawWs: WebSocket | null = null;
 let gatewayConnected = false;
 
-function loadOperatorToken(): string | null {
+/**
+ * Resolve the gateway auth token.
+ * Priority: OPENCLAW_GATEWAY_TOKEN env  →  device-auth.json operator token
+ */
+function loadGatewayToken(): string | null {
+  // 1. Explicit env var (recommended — matches OpenClaw's own convention)
+  if (process.env.OPENCLAW_GATEWAY_TOKEN) return process.env.OPENCLAW_GATEWAY_TOKEN;
+
+  // 2. Fallback: device-auth operator token (works when gateway uses same token)
   try {
     if (!existsSync(DEVICE_AUTH_PATH)) return null;
     const auth = JSON.parse(readFileSync(DEVICE_AUTH_PATH, 'utf-8'));
@@ -82,15 +90,16 @@ function loadOperatorToken(): string | null {
 }
 
 async function connectToOpenClaw(): Promise<boolean> {
-  const token = loadOperatorToken();
+  const token = loadGatewayToken();
   if (!token) {
-    console.warn('⚠️  No OpenClaw operator token found — running standalone');
+    console.warn('⚠️  No OpenClaw gateway token found — set OPENCLAW_GATEWAY_TOKEN or run standalone');
     return false;
   }
 
   return new Promise((resolve) => {
     try {
-      const ws = new WebSocket(`${OPENCLAW_GATEWAY_URL}?token=${token}`);
+      // SDK does NOT pass token as query param — only in the connect request
+      const ws = new WebSocket(OPENCLAW_GATEWAY_URL);
       const timeout = setTimeout(() => {
         ws.close();
         console.warn('⚠️  OpenClaw Gateway connection timeout — running standalone');
