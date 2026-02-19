@@ -1,316 +1,627 @@
-# CustoFi Monorepo
+# FlowCap/CustoFi Monorepo
 
-Complete setup for CustoFi - Autonomous DeFi Wealth Manager on BNB Chain
+**Autonomous DeFi Portfolio Manager with AI-Powered Rebalancing**
 
-## Overview
+FlowCap combines AI agents, account abstraction, and mathematical modeling to autonomously manage DeFi positions on BNB Chain. Users delegate control through a dashboard, and the system continuously monitors and optimizes their portfolio.
 
-CustoFi is an AI-powered DeFi yield optimizer that autonomously manages liquidity provider (LP) positions on PancakeSwap V2. It uses account abstraction (ERC-4337) with Biconomy for gasless transactions and session keys for secure automated trading.
+Note : FlowCap = CustoFi
 
-## Features
+---
 
-- **V2 LP Position Analysis**: Mathematical modeling of impermanent loss, trading fees, and farming rewards
-- **Monte Carlo Simulation**: Run 1000 scenarios to estimate expected returns, risk, and probability distribution
-- **Historical Price Data**: Automatically retrieve real historical prices from CoinGecko to calculate price ratios
-- **Harvest Frequency Optimization**: Tests 10 different harvest frequencies to maximize returns
-- **On-Chain Data Integration**: Auto-fetch real pool data (TVL, volume, staking rewards) from DeFiLlama and DexScreener
-- **Risk Assessment**: Calculate expected IL based on historical price movements and probability distributions
-- **Session Keys**: Secure automated trading with time-limited permissions
-- **Dashboard**: Real-time monitoring with transaction history
+## 🎯 Complete Process Flow
 
-## Quick Start
+### 1. **User Delegates Control (Dashboard → Server)**
 
-### Installation
-
-```bash
-npm install
+```
+User Browser
+    ↓ Signs ERC-7715 Permission
+    ↓ Creates Session Key (24h)
+    ↓
+Dashboard (Vercel)
+    ↓ POST /api/flowcap/delegate
+    ↓
+FlowCap Server (Railway)
+    ↓ Saves to ~/.openclaw/flowcap-delegations/
+    ↓ Creates monitoring instructions
+    ↓
+OpenClaw Agent (Local/Cloud)
 ```
 
-### Available Scripts
+**What happens:**
+- User connects wallet (Coinbase Smart Wallet)
+- Selects risk profile (Low/Medium/High)
+- Sets max investment amount
+- Signs delegation with session key (24h validity)
+- Dashboard sends delegation to server
+- Server saves to OpenClaw directory
 
-#### LP Calculators
+**Files created:**
+```
+~/.openclaw/flowcap-delegations/
+├── {delegationId}.json          # Full delegation details
+├── active.json                  # List of all active delegations
+├── monitor-{delegationId}.json  # Monitoring config
+└── whatsapp-{delegationId}.txt  # Notification message
+```
+
+---
+
+### 2. **AI Agent Monitors Portfolio (OpenClaw → Analysis)**
+
+```
+OpenClaw Agent
+    ↓ Reads delegation files
+    ↓ Every 5 minutes
+    ↓
+Portfolio Evaluation
+    ↓ Loads existing positions
+    ↓ Fetches historical prices
+    ↓ Calculates correlation matrix
+    ↓ Computes portfolio metrics
+    ↓
+Risk Analysis
+    ↓ Portfolio volatility
+    ↓ Value at Risk (VaR)
+    ↓ Sharpe ratio
+    ↓ Diversification benefit
+```
+
+**What happens:**
+- Agent reads delegation from `~/.openclaw/flowcap-delegations/`
+- Scans user's current DeFi positions
+- Runs portfolio analysis with correlation matrix
+- Identifies optimization opportunities
+- Checks if APY improvement meets threshold
+
+**Key files:**
+- `agents/skills/PortfolioEvaluation.ts` - Portfolio-level risk analysis
+- `agents/skills/analyzePool-LPV2.ts` - LP V2 position modeling
+- `agents/skills/analyzePool-LPV3.ts` - LP V3 position modeling
+- `agents/skills/analyzePool-Lending.ts` - Lending protocol analysis
+
+---
+
+### 3. **Position Analysis (Monte Carlo + Historical Data)**
+
+```
+Position Discovery
+    ↓
+DeFiLlama API
+    ↓ Pool TVL, volume, fees
+    ↓
+CoinGecko API
+    ↓ Historical prices (90 days)
+    ↓
+Calculate Distribution Parameters
+    ↓ μ (drift), σ (volatility)
+    ↓
+Monte Carlo Simulation
+    ↓ 1000 scenarios
+    ↓
+Risk Assessment
+    ↓ Expected return
+    ↓ Probability of loss
+    ↓ VaR, Sharpe ratio
+```
+
+**Example Output:**
+```
+📊 WBNB-USDT LP Position Analysis
+
+Historical Data (90 days):
+  WBNB: $612.45 → $589.23 (-3.8%)
+  USDT: $1.000 → $1.001 (+0.1%)
+  
+Distribution Parameters:
+  μ (daily drift):      -0.042%
+  σ (daily volatility):  2.87%
+  Annualized vol:       54.86%
+
+Monte Carlo Results (1000 simulations):
+  Expected Value:       $10,456
+  Expected Return:      +$456 (+4.56%)
+  Risk (Std Dev):       $187
+  Probability of Loss:  8.3%
+  
+  5th percentile:       $10,089
+  Median:              $10,478
+  95th percentile:      $10,712
+
+Risk Assessment: ✅ LOW RISK
+```
+
+---
+
+### 4. **Opportunity Discovery**
+
+```
+Agent Evaluates:
+    ↓
+Current Position APY: 12.5%
+New Opportunity APY:  18.2%
+    ↓
+Improvement: +5.7% (> threshold)
+    ↓
+Risk Check:
+  - Volatility acceptable?   ✅
+  - Correlation too high?    ✅
+  - Min holding period met?  ✅
+    ↓
+Decision: REBALANCE ✅
+```
+
+**Decision Matrix:**
+
+| Risk Profile | Min APY Improvement | Min Holding Period | Max Position Correlation |
+|--------------|--------------------|--------------------|------------------------|
+| Low          | +2.0%              | 7 days             | 0.7                    |
+| Medium       | +1.5%              | 3 days             | 0.8                    |
+| High         | +1.0%              | 1 day              | 0.9                    |
+
+---
+
+### 5. **Autonomous Execution (Session Keys)**
+
+```
+Agent Decision
+    ↓
+Build Transaction
+    ↓ Remove liquidity from old pool
+    ↓ Swap tokens if needed
+    ↓ Add liquidity to new pool
+    ↓
+Sign with Session Key
+    ↓ ERC-7715 permissions
+    ↓ Time-limited (24h)
+    ↓ Specific contracts only
+    ↓
+Submit via Biconomy
+    ↓ Gasless transaction
+    ↓ User doesn't pay gas
+    ↓
+On-Chain Execution
+```
+
+**Session Key Permissions:**
+```typescript
+{
+  target: "0x...",           // PancakeSwap Router
+  valueLimit: "1000000000",  // Max $1000
+  maxCalls: 10,              // Max 10 transactions
+  validUntil: timestamp + 86400, // 24 hours
+  validAfter: timestamp
+}
+```
+
+**Security:**
+- ✅ Time-limited (24h max)
+- ✅ Amount-limited (user-defined max)
+- ✅ Contract whitelist (only PancakeSwap)
+- ✅ Revocable anytime via dashboard
+
+---
+
+### 6. **Real-Time Updates (Server-Sent Events)**
+
+```
+Agent Server (Port 3002)
+    ↓ SSE Stream
+    ↓
+Dashboard (Browser)
+    ↓ Receives events
+    ↓
+Update UI:
+  - Transaction status
+  - Portfolio value
+  - APY changes
+  - Risk metrics
+```
+
+**Event Types:**
+```typescript
+{
+  type: "delegation.received",
+  data: { delegationId, amount, risk }
+}
+
+{
+  type: "position.analyzed", 
+  data: { position, expectedReturn, risk }
+}
+
+{
+  type: "opportunity.found",
+  data: { currentAPY, newAPY, improvement }
+}
+
+{
+  type: "transaction.submitted",
+  data: { txHash, type, amount }
+}
+
+{
+  type: "transaction.confirmed",
+  data: { txHash, newPosition }
+}
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐
+│  User Browser   │
+│   (Dashboard)   │
+└────────┬────────┘
+         │ 1. Delegate
+         ↓
+┌─────────────────┐
+│ FlowCap Server  │  ← Railway (monorepo-production-6073.up.railway.app)
+│  (Receiver)     │
+│  Port 3001      │
+└────────┬────────┘
+         │ 2. Save delegation
+         ↓
+┌─────────────────┐
+│ ~/.openclaw/    │
+│  delegations/   │  ← File system storage
+└────────┬────────┘
+         │ 3. Read & monitor
+         ↓
+┌─────────────────┐
+│ OpenClaw Agent  │  ← AI agent with skills
+│  (Local/Cloud)  │
+└────────┬────────┘
+         │ 4. Analyze & execute
+         ↓
+┌─────────────────┐
+│ Agent Server    │  ← SSE event stream
+│  (Port 3002)    │
+└────────┬────────┘
+         │ 5. Stream events
+         ↓
+┌─────────────────┐
+│  Dashboard UI   │  ← Real-time updates
+└─────────────────┘
+```
+
+---
+
+## 📦 Installation
 
 ```bash
-# Monte Carlo simulation - 1000 scenarios with risk analysis (BEST FOR RISK ASSESSMENT)
+# Install dependencies
+npm install
+
+# Setup environment
+cp .env.example .env
+# Add: COINGECKO_API_KEY, BICONOMY_API_KEY, etc.
+
+# Build TypeScript
+npm run build
+```
+
+---
+
+## 🚀 Running the System
+
+### Option 1: Full Stack (Recommended)
+
+```bash
+# Terminal 1: Start FlowCap Server (receives delegations)
+npm run server:start
+
+# Terminal 2: Start Agent Server (SSE events)
+npm run agent:serve
+
+# Terminal 3: Start OpenClaw Agent (monitoring)
+npm run agent:run
+
+# Terminal 4: Start Dashboard
+cd dashboard && npm run dev
+```
+
+### Option 2: Production (Railway + Vercel)
+
+1. **Deploy Server to Railway:**
+   ```bash
+   # Set start command in Railway:
+   cd server && npm start
+   ```
+
+2. **Deploy Dashboard to Vercel:**
+   ```bash
+   cd dashboard && vercel deploy
+   ```
+
+3. **Update Environment Variables:**
+   ```
+   NEXT_PUBLIC_AGENT_SERVER_URL=https://monorepo-production-6073.up.railway.app
+   ```
+
+---
+
+## 📊 Available Scripts
+
+### Portfolio Analysis
+
+```bash
+# Complete portfolio evaluation with correlation matrix
+npm run portfolio:evaluate
+
+# Analyze specific position type
+npm run analyze:lpv2
+npm run analyze:lpv3
+npm run analyze:lending
+
+# Monte Carlo risk simulation
 npm run calc:montecarlo
 
-# Interactive calculator with historical price data (RECOMMENDED)
+# Historical price backtesting
 npm run calc:historical
-
-# Auto-fetch on-chain pool data (manual r input)
-npm run calc:onchain
-
-# Manual input calculator
-npm run calc:final
-
-# Quick test with pre-configured scenarios
-npm run quick:final
-
-# Detailed step-by-step calculation breakdown
-npm run debug:calc
 ```
 
-#### Testing
+### Server Management
 
 ```bash
-# Test Monte Carlo simulation
-npm run test:montecarlo
+# Start delegation receiver
+npm run server:start
 
-# Test historical price retrieval
-npm run test:pricehistory
+# Start agent SSE server
+npm run agent:serve
 
-# Test LP V2 analysis
-npm run test:lpv2
+# Check server health
+curl http://localhost:3001/health
+curl http://localhost:3002/health
+```
 
+### Testing
+
+```bash
 # Run all tests
 npm test
+
+# Test specific components
+npm run test:portfolio
+npm run test:lpv2
+npm run test:montecarlo
+npm run test:pricehistory
 ```
 
-## Documentation
+---
 
-- **[Monte Carlo Simulation Guide](docs/MONTE_CARLO_GUIDE.md)** - Complete guide to probabilistic risk analysis
-- **[Historical Prices Guide](docs/HISTORICAL_PRICES_GUIDE.md)** - How to use historical price data for backtesting
-- **[On-Chain Calculator Guide](docs/GUIDE_CALCULATEUR_ONCHAIN.md)** - French guide for automated pool data fetching
-- **[Pool Data Parameters](POOL_DATA_EXOGENOUS_PARAMS.md)** - Explanation of all mathematical parameters
+## 🔧 Configuration
 
-## Example Usage
+### Risk Profiles
 
-### Calculate V_final with Historical Data
+Edit `agents/config.yaml`:
 
-```bash
-npm run calc:historical
-```
-
-**Interactive prompts:**
-1. Select a pool from top 20 by TVL
-2. Enter initial investment amount
-3. Enter investment period (days)
-4. System automatically fetches historical prices
-5. Calculates optimized V_final
-
-**Example output:**
-```
-Historical Price Analysis (90 days):
-  ETH: $3021.30 → $2011.68 (-33.42%)
-  BUSD: $0.9983 → $1.0007 (+0.24%)
+```yaml
+risk_profiles:
+  low:
+    min_apy_improvement: 2.0
+    min_holding_period_days: 7
+    max_position_correlation: 0.7
+    max_portfolio_volatility: 0.15
   
-📊 Calculated r = 0.664233
-📉 Historical IL = -2.06%
-
-💰 V_final = $9,456.23
-   Total return: -$543.77 (-5.44%)
+  medium:
+    min_apy_improvement: 1.5
+    min_holding_period_days: 3
+    max_position_correlation: 0.8
+    max_portfolio_volatility: 0.25
+  
+  high:
+    min_apy_improvement: 1.0
+    min_holding_period_days: 1
+    max_position_correlation: 0.9
+    max_portfolio_volatility: 0.40
 ```
 
-### Monte Carlo Risk Analysis
+### Monitoring Intervals
 
-```bash
-npm run calc:montecarlo
-```
-
-**What it does:**
-- Fetches historical prices to estimate volatility (μ, σ)
-- Runs 1000 simulations with different price scenarios
-- Provides expected return, risk, and probability distribution
-
-**Example output:**
-```
-Distribution Parameters (from 90 days of ETH-BUSD):
-  Daily μ (drift):       -0.4560%
-  Daily σ (volatility):   3.90%
-  Annualized volatility:  74.57%
-
-MONTE CARLO RESULTS (1000 simulations):
-═══════════════════════════════════════════════════════════
-
-Expected Value (Mean):    $10,376
-Mean Return:              +$376 (+3.76%)
-Risk (Std Dev):           $429
-Probability of Loss:      16.0%
-
-Distribution:
-  5th percentile:         $9,525 (worst 5%)
-  Median:                 $10,516
-  95th percentile:        $10,757 (best 5%)
-
-⚠️ MODERATE RISK: 16% probability of loss
-```
-
-**Key insights:**
-- **Expected return**: $376 average across 1000 scenarios
-- **Risk**: $429 standard deviation (41% of mean return)
-- **Worst case (5%)**: Lose $475
-- **Best case (5%)**: Gain $757
-
-### Programmatic Usage
-
-**Historical Price Data:**
 ```typescript
-import { getPriceRatioForPeriod } from './agents/skills/getPriceHistory.js';
-import { calculateOptimizedFinalValue } from './agents/skills/analyzePool-LPV2.js';
-
-// Get historical price ratio
-const priceData = await getPriceRatioForPeriod("ETH", "BUSD", 90);
-
-// Calculate final value
-const V_final = calculateOptimizedFinalValue(
-  {
-    V_initial: 10000,
-    days: 90,
-    r: priceData.priceRatio // From real historical data
-  },
-  poolExogenousParams
-);
-
-console.log(`Expected return: $${V_final.toFixed(2)}`);
+// agents/skills/PortfolioEvaluation.ts
+const MONITORING_CONFIG = {
+  checkInterval: 300000,        // 5 minutes
+  priceHistoryDays: 90,         // 90 days for correlation
+  monteCarloSimulations: 1000,  // Number of scenarios
+  confidenceLevel: 0.95,        // 95% confidence
+};
 ```
 
-**Monte Carlo Simulation:**
-```typescript
-import { 
-  monteCarloSimulation,
-  estimateLogReturnParameters,
-} from './agents/skills/analyzePool-LPV2.js';
-import { getPriceRatioTimeSeries } from './agents/skills/getPriceHistory.js';
+---
 
-// 1. Get historical price ratios
-const priceRatios = await getPriceRatioTimeSeries('ETH', 'BUSD', 90);
-
-// 2. Estimate distribution parameters (μ, σ)
-const params = estimateLogReturnParameters(priceRatios);
-
-// 3. Run 1000 simulations
-const result = monteCarloSimulation(
-  { V_initial: 10000, days: 90 },
-  poolExogenousParams,
-  { mu: params.mu, sigma: params.sigma },
-  1000
-);
-
-// 4. Analyze results
-console.log(`Expected return: $${result.meanReturn.toFixed(2)}`);
-console.log(`Risk (std dev): $${result.stdDevReturn.toFixed(2)}`);
-console.log(`P(Loss): ${(result.probabilityOfLoss * 100).toFixed(1)}%`);
-console.log(`Worst case (5%): $${result.percentile5.toFixed(2)}`);
-console.log(`Best case (5%): $${result.percentile95.toFixed(2)}`);
-```
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 monorepo/
+├── server/
+│   ├── index.ts                    # Delegation receiver (PORT 3001)
+│   └── package.json
+│
 ├── agents/
-│   ├── skills/
-│   │   ├── analyzePool-LPV2.ts       # Core LP calculation engine
-│   │   ├── getPriceHistory.ts        # Historical price retrieval
-│   │   ├── getPoolData.ts            # On-chain data fetcher
-│   │   ├── getPools.ts               # Pool discovery
-│   │   ├── execSwap.ts               # Trade execution
-│   │   └── analyzePool.ts            # Pool analysis
-│   ├── openclaw-runner.ts            # AI agent runner
-│   └── config.yaml                   # Agent configuration
-├── dashboard/                         # Next.js dashboard
+│   ├── server.ts                   # SSE event server (PORT 3002)
+│   ├── openclaw-runner.ts          # AI agent runner
+│   ├── config.yaml                 # Agent configuration
+│   └── skills/
+│       ├── PortfolioEvaluation.ts  # 📊 Portfolio analysis
+│       ├── analyzePool-LPV2.ts     # LP V2 modeling
+│       ├── analyzePool-LPV3.ts     # LP V3 modeling
+│       ├── analyzePool-Lending.ts  # Lending analysis
+│       ├── getPriceHistory.ts      # Historical price data
+│       ├── getPoolData.ts          # DeFiLlama integration
+│       └── execSwap.ts             # Transaction execution
+│
+├── dashboard/
+│   ├── app/
+│   │   └── page.tsx                # Main dashboard
 │   ├── components/
-│   │   ├── AgentDashboard.tsx        # Main dashboard
-│   │   ├── RiskSelector.tsx          # Risk profile selector
-│   │   └── WalletConnect.tsx         # Wallet integration
+│   │   ├── WalletConnect.tsx       # Coinbase wallet
+│   │   ├── RiskSelector.tsx        # Risk profile UI
+│   │   ├── PositionsList.tsx       # Current positions
+│   │   └── TransactionHistory.tsx  # Transaction log
 │   └── hooks/
-│       ├── useBiconomy.ts            # Biconomy AA integration
-│       └── useSessionKey.ts          # Session key management
-├── scripts/
-│   ├── calculate-with-historical-prices.ts  # Interactive calculator with history
-│   ├── calculate-with-onchain-data.ts       # On-chain data calculator
-│   ├── test-price-history.ts                # Historical price tests
-│   └── debug-calculation.ts                  # Detailed breakdown
-├── docs/
-│   ├── HISTORICAL_PRICES_GUIDE.md    # Historical data guide
-│   └── GUIDE_CALCULATEUR_ONCHAIN.md  # French on-chain guide
-└── contracts/
-    └── SessionValidator.sol           # Session key validator
-
+│       ├── useBiconomy.ts          # Account abstraction
+│       ├── useSessionKey.ts        # Session key management
+│       └── useAgentEvents.ts       # SSE event stream
+│
+├── contracts/
+│   └── SessionValidator.sol        # ERC-7715 validator
+│
+└── docs/
+    ├── MONTE_CARLO_GUIDE.md        # Risk simulation guide
+    ├── HISTORICAL_PRICES_GUIDE.md  # Backtesting guide
+    └── ARCHITECTURE.md             # System architecture
 ```
 
-## Core Formula
+---
 
-The V_final calculation models an LP position as:
+## 🔐 Security
+
+### Session Keys (ERC-7715)
+
+```solidity
+struct Permission {
+    address target;      // Only PancakeSwap Router
+    uint256 valueLimit;  // Max transaction amount
+    uint48 validUntil;   // 24 hours max
+    uint48 validAfter;   // Cannot use before timestamp
+}
+```
+
+**User Controls:**
+- ✅ Revoke session anytime via dashboard
+- ✅ Set maximum investment amount
+- ✅ Choose risk profile (limits volatility)
+- ✅ View all transactions in real-time
+- ✅ 24-hour automatic expiration
+
+---
+
+## 📊 Mathematical Models
+
+### Impermanent Loss
 
 ```
-V_final = V_initial × IL_factor × (1 + r_harvest)^n - gas_costs
-```
+IL = (2√r) / (1+r) - 1
 
 Where:
-- **IL_factor** = `(2√r) / (1+r)` - Impermanent loss multiplier
-- **r** = `P_final / P_initial` - Price ratio (from historical data or user input)
-- **r_harvest** = Trading fee APY + Farming APY (if staking pool exists)
-- **n** = Number of harvest periods
-- **gas_costs** = Total gas fees for harvesting
-
-The system tests 10 harvest frequencies (1h to 168h) and selects the optimal one.
-
-## API Integrations
-
-- **CoinGecko**: Historical price data for 20+ tokens
-- **DeFiLlama**: Pool TVL and volume data
-- **DexScreener**: Real-time pool metrics
-- **Owlracle**: BSC gas price estimates
-- **Biconomy**: Account abstraction and gasless transactions
-
-## Rate Limits
-
-⚠️ **CoinGecko Free Tier**: 10-12 requests/minute
-
-If you see rate limit errors:
-```
-⚠️ CoinGecko rate limit exceeded. Wait a few minutes or use API key.
+  r = P_final / P_initial
+  P = price ratio of token0/token1
 ```
 
-**Solution**: Wait 60 seconds between test runs, or upgrade to CoinGecko Pro API.
+### Portfolio Volatility
 
-## Development
+```
+σ_p = √(w^T · Σ · w)
+
+Where:
+  w = weight vector
+  Σ = covariance matrix
+  w^T = transpose of weights
+```
+
+### Value at Risk (VaR)
+
+```
+VaR_α = μ - z_α · σ
+
+Where:
+  μ = expected return
+  σ = standard deviation
+  z_α = z-score for confidence level α
+```
+
+### Sharpe Ratio
+
+```
+Sharpe = (R_p - R_f) / σ_p
+
+Where:
+  R_p = portfolio return
+  R_f = risk-free rate (0% for crypto)
+  σ_p = portfolio volatility
+```
+
+---
+
+## 🌐 API Integrations
+
+| Service | Purpose | Rate Limit |
+|---------|---------|------------|
+| **CoinGecko** | Historical prices | 10-12 req/min (free) |
+| **DeFiLlama** | Pool TVL & volume | No limit |
+| **DexScreener** | Real-time pool data | No limit |
+| **Biconomy** | Account abstraction | 100 req/min |
+| **Owlracle** | Gas price estimates | 100 req/day (free) |
+
+---
+
+## 🐛 Debugging
+
+### Check Server Status
 
 ```bash
-# Build TypeScript
-npm run build
+# FlowCap Server (delegation receiver)
+curl http://localhost:3001/health
 
-# Run agent in development mode
-npm run agent:dev
+# Agent Server (SSE events)
+curl http://localhost:3002/health
 
-# Start dashboard
-cd dashboard && npm run dev
-
-# Format code
-npm run format
-
-# Lint
-npm run lint
+# Check active delegations
+curl http://localhost:3001/api/flowcap/status
 ```
 
-## Constants
-
-- **PancakeSwap Daily Emissions**: 14,500 CAKE/day (5,292,500/year)
-- **Trading Fee**: 0.17% (0.15% to LPs + 0.02% treasury)
-- **Network**: BNB Chain (BSC)
-
-## Testing
-
-Run comprehensive tests:
+### Check Delegation Files
 
 ```bash
-# All tests
-npm test
+# List all delegations
+ls ~/.openclaw/flowcap-delegations/
 
-# LP V2 analysis tests
-npm run test:lpv2
+# View active delegations
+cat ~/.openclaw/flowcap-delegations/active.json
 
-# Historical price tests
-npm run test:pricehistory
+# View specific delegation
+cat ~/.openclaw/flowcap-delegations/{delegationId}.json
 ```
 
-## License
+### Monitor Agent Logs
+
+```bash
+# Watch agent logs in real-time
+npm run agent:run
+# Look for: "📥 Received delegation", "🔍 Analyzing position", "✅ Transaction submitted"
+```
+
+### Test SSE Stream
+
+```bash
+# Connect to event stream
+curl -N http://localhost:3002/api/agent/events?wallet=0x...
+```
+
+---
+
+## 🎓 Learn More
+
+- **[Portfolio Evaluation Deep Dive](docs/PORTFOLIO_EVALUATION.md)**
+- **[Monte Carlo Simulation Guide](docs/MONTE_CARLO_GUIDE.md)**
+- **[Session Keys Explained](docs/SESSION_KEYS.md)**
+- **[Correlation Matrix Mathematics](docs/CORRELATION_ANALYSIS.md)**
+
+---
+
+## 📜 License
 
 MIT
 
-## References
+---
 
-- [PancakeSwap V2 Docs](https://docs.pancakeswap.finance/)
-- [Impermanent Loss Explained](https://finematics.com/impermanent-loss-explained/)
-- [Biconomy Account Abstraction](https://docs.biconomy.io/)
-- [CoinGecko API](https://www.coingecko.com/en/api/documentation)
+## 🙏 Credits
+
+- **PancakeSwap** - DEX protocol
+- **Biconomy** - Account abstraction
+- **CoinGecko** - Price data
+- **DeFiLlama** - TVL & volume data
+- **OpenClaw** - AI agent framework
